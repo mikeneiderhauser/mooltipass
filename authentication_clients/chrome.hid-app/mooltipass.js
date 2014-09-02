@@ -44,19 +44,23 @@ var debug = false;
 var packetSize = 64;    // number of bytes in an HID packet
 var payloadSize = packetSize - 2;
 
-var reContext = /^\https?\:\/\/([\w.]+)/;   // URL regex to extract base domain for context
+var AUTH_REQ_TIMEOUT = 15000;   // timeout for requests sent to mooltipass
+
+var reContext = /^\https?\:\/\/([\w.\-\_]+)/;   // URL regex to extract base domain for context
+//var reContext = /(^.{1,254}$)(^(((?!-)[a-zA-Z0-9-]{1,63}(?<!-))|((?!-)[a-zA-Z0-9-]{1,63}(?<!-)\.)+[a-zA-Z]{2,63})$/;
+//var reContext = /https?\:\/\/(?www\.)?([-a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,4})\b(?[-a-zA-Z0-9@:%_\+.~#?&//=]*)/;
 
 // Commands that the MP device can send.
-var CMD_DEBUG        = 0x01;
-var CMD_PING         = 0x02;
-var CMD_VERSION      = 0x03;
-var CMD_CONTEXT      = 0x04;
-var CMD_GET_LOGIN    = 0x05;
-var CMD_GET_PASSWORD = 0x06;
-var CMD_SET_LOGIN    = 0x07;
-var CMD_SET_PASSWORD = 0x08;
-var CMD_CHECK_PASSWORD = 0x09;
-var CMD_ADD_CONTEXT  = 0x0A;
+var CMD_DEBUG               = 0x01;
+var CMD_PING                = 0x02;
+var CMD_VERSION             = 0x03;
+var CMD_CONTEXT             = 0x04;
+var CMD_GET_LOGIN           = 0x05;
+var CMD_GET_PASSWORD        = 0x06;
+var CMD_SET_LOGIN           = 0x07;
+var CMD_SET_PASSWORD        = 0x08;
+var CMD_CHECK_PASSWORD      = 0x09;
+var CMD_ADD_CONTEXT         = 0x0A;
 var CMD_EXPORT_FLASH        = 0x30;    // resp: 0x30 packets until 0x31
 var CMD_EXPORT_FLASH_END    = 0x31;
 var CMD_IMPORT_FLASH_BEGIN  = 0x32;    // confirmed by 0x32,0x01
@@ -66,15 +70,18 @@ var CMD_EXPORT_EEPROM       = 0x35;    // resp: 0x35 packets until 0x36
 var CMD_EXPORT_EEPROM_END   = 0x36;
 var CMD_IMPORT_EEPROM_BEGIN = 0x37;    // confirmed by 0x37,0x01
 var CMD_IMPORT_EEPROM       = 0x38;    // send packet, acked with 0x38,0x01
-var CMD_IMPORT_EEPROM_END   = 0x39; 
-var CMD_EXPORT_FLASH_START  = 0x45;    // request permission to export flash
-var CMD_EXPORT_EEPROM_START = 0x46;    // request permission to export eeprom
-
+var CMD_IMPORT_EEPROM_END   = 0x39;
 var CMD_ERASE_EEPROM        = 0x40;
 var CMD_ERASE_FLASH         = 0x41;
-var CMD_ERASE_SMC           = 0x42;
-var CMD_DRAW_BITMAP         = 0x43;
+var CMD_ERASE_SMARTCARD     = 0x42;
+var CMD_DRAW_BITMAP         = 0x43;	
 var CMD_SET_FONT            = 0x44;
+var CMD_EXPORT_FLASH_START  = 0x45;
+var CMD_EXPORT_EEPROM_START = 0x46;
+var CMD_SET_BOOTLOADER_PWD  = 0x47;
+var CMD_JUMP_TO_BOOTLOADER  = 0x48;
+var CMD_CLONE_SMARTCARD     = 0x49;
+var CMD_STACK_FREE          = 0x50;
 
 // supported flash chips
 // 264,   512,  128   1MB   0001 ID:00010=2  5  7 12, 6 2 16 S: 3 - 8,120,128
@@ -90,23 +97,26 @@ var FLASH_CHIP_4M           = 4;   // 4M Flash Chip (AT45DB041E)
 var FLASH_CHIP_8M           = 8;   // 8M Flash Chip (AT45DB081E)
 var FLASH_CHIP_16M          = 16;  // 16M Flash Chip (AT45DB161E)
 var FLASH_CHIP_32M          = 32;  // 32M Flash Chip (AT45DB321E)
-var FLASH_USER_ZONE_SIZE    = 1056;
+var FLASH_MEDIA_START_PAGE  = 8;
 
 var flashInfo = {
      1: { pageSize: 264, pageCount:  512, pagesPerSector: 128 },
      2: { pageSize: 264, pageCount: 1024, pagesPerSector: 128 },
      4: { pageSize: 264, pageCount: 2048, pagesPerSector: 256 },
      8: { pageSize: 264, pageCount: 4096, pagesPerSector: 256 },
-    16: { pageSize: 264, pageCount: 4096, pagesPerSector: 256 },
-    32: { pageSize: 264, pageCount: 8192, pagesPerSector: 128 }
+    16: { pageSize: 528, pageCount: 4096, pagesPerSector: 256 },
+    32: { pageSize: 528, pageCount: 8192, pagesPerSector: 128 }
 };
 
 var flashChipId = null;
 
 
-var connection = null;  // connection to the mooltipass
-var connected = false;  // current connection state
-var authReq = null;     // current authentication request
+var clientId = null;     // chrome extension address
+var connection = null;   // connection to the mooltipass
+var connected = false;   // current connection state
+var version = 'unknown'; // connected mooltipass version
+var authReq = null;      // current authentication request
+var authReqQueue = [];
 var context = null;
 var contextGood = false;
 var createContext = false;
@@ -117,6 +127,7 @@ var connectMsg = null;  // saved message to send after connecting
 var FLASH_PAGE_COUNT = 512;
 var FLASH_PAGE_SIZE = 264;
 var EEPROM_SIZE = 1024;
+var FLASH_EXPORT_ALL = false;
 
 var exportData = null;        // arraybuffer for receiving exported data
 var exportDataUint8 = null;   // uint8 view of exportData 
@@ -135,6 +146,8 @@ var media = {};             // media file info from mooltipass
 var importProgressBar = null;
 var exportProgressBar = null;
 var uploadProgressBar = null;
+
+var authReqTimeout = null;  // timer for auth requests sent to mooltipass
 
 // map between input field types and mooltipass credential types
 var getFieldMap = {
@@ -345,7 +358,7 @@ function setNextField()
             // no more input fields to set on mooltipass
             chrome.runtime.sendMessage(authReq.senderId, {type: 'updateComplete'});
             log('#messageLog', 'update finished \n');
-            authReq = null;
+            endAuthRequest();
         }
     }
     else
@@ -417,6 +430,120 @@ function getKeys(fields)
 }
 
 /**
+ * timeout waiting for current auth request to complete
+ */
+function timeoutAuthRequest()
+{
+    console.log('authreq timeout');
+    authReqTimeout = null;
+    endAuthRequest();
+}
+
+/**
+ * end the current auth request
+ */
+function endAuthRequest()
+{
+    if (debug) {
+        if (authReq) {
+            console.log('endAuthRequest '+authReq.type);
+        } else {
+            console.log('endAuthRequest - no active request');
+        }
+    }
+    if (authReqTimeout != null) {
+        console.log('clear authreq timeout');
+        clearTimeout(authReqTimeout);
+        authReqTimeout = null;
+    } else {
+        console.log('no timeout to clear');
+    }
+    if (authReqQueue.length > 0) {
+        authReq = authReqQueue.shift();
+        startAuthRequest(authReq);
+    } else {
+        authReq = null;
+    }
+}
+
+/**
+ * start a new auth request
+ */
+function startAuthRequest(request)
+{
+    switch (request.type) {
+    case 'ping':    // hellow from extension
+        clientId = request.senderId;
+        // Send current mooltipass status
+        if (connected) {
+            console.log('got extension ping, sending connected');
+            chrome.runtime.sendMessage(request.senderId, {type: 'connected', version: version});
+        } else {
+            console.log('got extension ping, sending disconnected');
+            chrome.runtime.sendMessage(request.senderId, {type: 'disconnected'});
+        }
+        break;
+    case 'inputs':
+        clientId = request.senderId;
+        authReq = request;
+        console.log('URL: '+request.url);
+        authReq.keys = getKeys(request.inputs);
+
+        console.log('keys: '+JSON.stringify(authReq.keys))
+
+        match = reContext.exec(request.url);
+        if (match.length > 0) {
+            if (!context || context != match[1]) {
+                context = match[1];
+                console.log('context: '+context);
+            } else {
+                console.log('not updating context '+context+' to '+match[1]);
+            }
+        }
+        authReq.context = context;
+
+        authReqTimeout = setTimeout(timeoutAuthRequest, AUTH_REQ_TIMEOUT);
+        setContext(false);
+        break;
+
+    case 'update':
+        clientId = request.senderId;
+        authReq = request;
+        match = reContext.exec(request.url);
+        if (match.length > 0) {
+            authReq.context = match[1];
+            console.log('auth context: '+authReq.context);
+        }
+        log('#messageLog', 'update:\n');
+        for (var key in request.inputs)
+        {
+            id = (request.inputs[key].id) ? request.inputs[key].id : request.inputs[key].name;
+            if (key == 'password') {
+                log('#messageLog', '    set "'+id+'" = "'+request.inputs[key].value.replace(/./gi, '*')+'"\n');
+            } else {
+                log('#messageLog', '    set "'+id+'" = "'+request.inputs[key].value+'"\n');
+            }
+        }
+
+        authReq.keys = getKeys(request.inputs);
+        authReqTimeout = setTimeout(timeoutAuthRequest, AUTH_REQ_TIMEOUT);
+
+        if (!contextGood || (context != authReq.context)) {
+            setContext(true);
+        } else {
+            setNextField();
+        }
+        break;
+
+    default:
+        // not a supported request type
+        endAuthRequest();
+        break;
+    }
+}
+
+
+/**
  * Initialise the app window, setup message handlers.
  */
 function initWindow()
@@ -429,9 +556,12 @@ function initWindow()
     var importFlashButton = document.getElementById("importFlash");
     var importEepromButton = document.getElementById("importEeprom");
     var importMediaButton = document.getElementById("importMedia");
-    var eraseEepromButton = document.getElementById("eraseEeprom");
-    var eraseFlashButton = document.getElementById("eraseFlash");
-    var eraseSmartcardButton = document.getElementById("eraseSmartcard");
+    var sendCMDButton = document.getElementById("sendCMD");
+    var jumpToBootloader = document.getElementById("jumpToBootloader");
+    var cloneSmartcard = document.getElementById("cloneSmartcard");
+    var drawBitmapButton = document.getElementById("drawBitmap");
+    var setFontButton = document.getElementById("setFont");
+    var fillButton = document.getElementById("fill");
 
     // clear contents of logs
     $('#messageLog').html('');
@@ -564,119 +694,51 @@ function initWindow()
         });
     });
 
-    eraseFlashButton.addEventListener('click', function() 
+    sendCMDButton.addEventListener('click', function()
     {
-        $('#eraseConfirm').dialog({
-            buttons: {
-                "Erase Mooltipass Flash?": function() 
-                {
-                    log('#developerLog', 'Erasing flash... ');
-                    sendRequest(CMD_ERASE_FLASH);
-                    $(this).dialog('close');
-                },
-                Cancel: function() 
-                {
-                    $(this).dialog('close');
-                }
-            }
-        });
-    });
-
-    eraseEepromButton.addEventListener('click', function() 
-    {
-        $('#eraseConfirm').dialog({
-            buttons: {
-                "Erase Mooltipass EEPROM?": function() 
-                {
-                    log('#developerLog', 'Erasing EEPROM... ');
-                    sendRequest(CMD_ERASE_EEPROM);
-                    $(this).dialog('close');
-                },
-                Cancel: function() 
-                {
-                    $(this).dialog('close');
-                }
-            }
-        });
-    });
-
-    eraseSmartcardButton.addEventListener('click', function() 
-    {
-        $('#eraseConfirm').dialog({
-            buttons: {
-                "Erase Mooltipass Smartcard?": function() 
-                {
-                    log('#developerLog', 'Erasing smartcard... ');
-                    sendRequest(CMD_ERASE_SMC);
-                    $(this).dialog('close');
-                },
-                Cancel: function() 
-                {
-                    $(this).dialog('close');
-                }
-            }
-        });
-    });
-
-    chrome.runtime.onMessageExternal.addListener(function(request, sender, sendResponse) 
-    {
-        switch (request.type)
-        {
-            case 'inputs':
-                console.log('URL: '+request.url);
-
-                authReq = request;
-                authReq.senderId = sender.id;
-                authReq.keys = getKeys(request.inputs);
-
-                console.log('keys: '+JSON.stringify(authReq.keys))
-
-                match = reContext.exec(request.url);
-                if (match.length > 0) {
-                    if (!context || context != match[1]) {
-                        context = match[1];
-                        console.log('context: '+context);
-                    } else {
-                        console.log('not updating context '+context+' to '+match[1]);
-                    }
-                }
-                authReq.context = context;
-
-                setContext(false);
-                break;
-
-            case 'update':
-                authReq = request;
-                authReq.senderId = sender.id;
-                match = reContext.exec(request.url);
-                if (match.length > 0) {
-                    authReq.context = match[1];
-                    console.log('auth context: '+authReq.context);
-                }
-                log('#messageLog', 'update:\n');
-                for (var key in request.inputs)
-                {
-                    id = (request.inputs[key].id) ? request.inputs[key].id : request.inputs[key].name;
-                    if (key == 'password') {
-                        log('#messageLog', '    set "'+id+'" = "'+request.inputs[key].value.replace(/./gi, '*')+'"\n');
-                    } else {
-                        log('#messageLog', '    set "'+id+'" = "'+request.inputs[key].value+'"\n');
-                    }
-                }
-
-                authReq.keys = getKeys(request.inputs);
-
-                if (!contextGood || (context != authReq.context)) {
-                    setContext(true);
-                } else {
-                    setNextField();
-                }
-                break;
-
-            default:
-                break;
+        var command = parseInt($('#sendCMDvalue').val(), 16);
+	if (command >= 0 && command <= 255){ 
+	    log('#messageLog', 'Sending '+ $('#sendCMDvalue').val() + '\n');
+            sendRequest(command);
+        } else{
+            log('#messageLog', 'command out of range\n');
         }
+    });
 
+    jumpToBootloader.addEventListener('click', function() 
+    {
+        log('#messageLog', 'Sending JUMP_TO_BOOTLOADER\n');
+        sendRequest(CMD_JUMP_TO_BOOTLOADER);
+    });
+
+    cloneSmartcard.addEventListener('click', function() 
+    {
+        log('#messageLog', 'Cloning smartcard\n');
+        sendRequest(CMD_CLONE_SMARTCARD);
+    });
+
+    drawBitmapButton.addEventListener('click', function() 
+    {
+        args = new Uint8Array([$('#bitmapId').val(), $('#bitmap_x').val(), $('#bitmap_y').val(), $("#bitmap_clear").is(':checked') ? 1 : 0]);
+        log('#messageLog', 'draw bitmap '+args[0]+' x='+args[1]+', y='+args[2]+', clear='+args[3]+'\n');
+        sendRequest(CMD_DRAW_BITMAP, args);
+    });
+
+    setFontButton.addEventListener('click', function() 
+    {
+        var args = strToArray(String.fromCharCode($('#fontId').val()) + $('#fontTestString').val());
+        log('#messageLog', 'set font '+args[0]+' "'+$('#fontTestString').val()+'"\n');
+        sendRequest(CMD_SET_FONT, args);
+    });
+
+    $('#enableDebug').change(function() {
+        if ($(this).is(":checked")) {
+            log('#messageLog', 'enabled debug\n');
+            debug = true;
+        } else {
+            log('#messageLog', 'disabled debug\n');
+            debug = false;
+        }
     });
 
     // configure jquery ui elements
@@ -692,31 +754,51 @@ function initWindow()
     $("#importFlash").button();
     $("#importEeprom").button();
     $("#importMedia").button();
-    $("#eraseFlash").button();
-    $("#eraseEeprom").button();
-    $("#eraseSmartcard").button();
+    $("#sendCMD").button();
+    $("#jumpToBootloader").button();
+    $("#cloneSmartcard").button();
+    $("#drawBitmap").button();
+    $("#setFont").button();
+    $("#fill").button();
     $("#tabs").tabs();
 
-    $("#drawBitmap").menu({
+    var eraseOptions = {
+        'eeprom and flash': { query: 'Erase EEPROM and Flash?', cmd: CMD_ERASE_EEPROM },
+        'flash':            { query: 'Erase Flash?',            cmd: CMD_ERASE_FLASH },
+        'smartcard':        { query: 'Erase smartcard?',        cmd: CMD_ERASE_SMARTCARD }
+    };
+                             
+    $("#erase").menu({
         select: function(event, ui) {
-            if (ui.item.text().length < 3) 
-            {
-                args = new Uint8Array([ui.item.text(), $('#bitmap_x').val(), $('#bitmap_y').val(), $("#bitmap_clear").is(':checked') ? 1 : 0]);
-                log('#messageLog', 'draw bitmap '+ui.item.text()+' x='+args[1]+', y='+args[2]+', clear='+args[3]+'\n');
-                sendRequest(CMD_DRAW_BITMAP, args);
+            var option = ui.item.text();
+            if (option in eraseOptions) {
+                query = eraseOptions[option].query;
+                var buts = {};
+                buts[query] = function() {
+                        log('#developerLog', 'Erasing '+option+'... ');
+                        sendRequest(eraseOptions[option].cmd);
+                        $(this).dialog('close');
+                    }
+                buts['Cancel'] = function() {
+                        $(this).dialog('close');
+                    }
+                $('#eraseConfirm').dialog({buttons: buts});
             }
         }
     });
-    $("#setFont").menu({
-        select: function(event, ui) {
-            if (ui.item.text().length < 3) 
-            {
-                log('#messageLog', 'set font '+ui.item.text()+'\n');
-                args = new Uint8Array([ui.item.text()]);
-                sendRequest(CMD_SET_FONT, args);
-            }
+
+    chrome.runtime.onMessageExternal.addListener(function(request, sender, sendResponse) 
+    {
+        request.senderId = sender.id;
+        console.log('received request '+request.type);
+
+        if (authReq == null) {
+            startAuthRequest(request)
+        } else {
+            authReqQueue.push(request);
         }
     });
+
 };
 
 /**
@@ -740,9 +822,8 @@ function sendNextPacket(cmd, importer)
     if (size <= 0)
     {
         // finished
-        log(importer.log, 'import complete.\n');
         sendRequest(cmd+1);     // END
-        return;
+        return 0;
     }
 
     data = new Uint8Array(importer.data, importer.offset, size);
@@ -765,6 +846,8 @@ function sendNextPacket(cmd, importer)
         importer.bar.progressbar('value', (importer.offset * 100)/ importer.data.byteLength);
     }
     sendRequest(cmd, data);
+
+    return importer.data.byteLength - importer.offset;
 }
 
 function updateMedia(data)
@@ -794,12 +877,25 @@ function allocateMediaPage(size)
  */
 function onDataReceived(reportId, data) 
 {
+    if (typeof reportId === "undefined" || typeof data === "undefined")
+    {
+        if (chrome.runtime.lastError)
+        {
+            var err = chrome.runtime.lastError;
+            if (err.message != "Transfer failed.")
+            {
+                console.log("Error in onDataReceived: " + err.message);
+            }
+        }
+        return;
+    }
+
     var bytes = new Uint8Array(data);
     var msg = new Uint8Array(data,2);
     var len = bytes[0]
     var cmd = bytes[1]
 
-    if (debug && (cmd != CMD_DEBUG) && (cmd < CMD_EXPORT_FLASH))
+    if (debug && (cmd != CMD_VERSION) && (cmd != CMD_DEBUG) && ((cmd < CMD_EXPORT_FLASH) || (cmd >= CMD_EXPORT_EEPROM)))
     {
         console.log('Received CMD ' + cmd + ', len ' + len + ' ' + JSON.stringify(msg));
     }
@@ -821,12 +917,15 @@ function onDataReceived(reportId, data)
             break;
         case CMD_VERSION:
         {
-            var version = "" + bytes[2] + "." + bytes[3];
+            version = arrayToStr(new Uint8Array(data.slice(3)));
             if (!connected)
             {
-                flashChipId = bytes[4];
-                log('#messageLog', 'Connected to Mooltipass ' + version + '\n');
+                flashChipId = msg[0];
+                log('#messageLog', 'Connected to Mooltipass ' + version + ' flashId '+flashChipId+'\n');
                 connected = true;
+                if (clientId) {
+                    chrome.runtime.sendMessage(clientId, {type: 'connected', version: version});
+                }
             }
             break;
         }
@@ -835,6 +934,7 @@ function onDataReceived(reportId, data)
             if (!contextGood)
             {
                 log('#messageLog',  'failed to create context '+authReq.context+'\n');
+                endAuthRequest();
             } else {
                 log('#messageLog', 'created context "'+authReq.context+'" for '+authReq.type+'\n');
                 log('#messageLog', 'setting context "'+authReq.context+'" for '+authReq.type+'\n');
@@ -872,7 +972,7 @@ function onDataReceived(reportId, data)
                 } else {
                     console.log('Failed to set up context "'+authReq.context+'"');
                     // failed to set up context
-                    authReq = null;
+                    endAuthRequest();
                 }
             }
             break;
@@ -896,6 +996,9 @@ function onDataReceived(reportId, data)
                     } else {
                         setNextField();
                     }
+                } else {
+                    // failed
+                    endAuthRequest();
                 }
             }
             break;
@@ -968,9 +1071,14 @@ function onDataReceived(reportId, data)
                     console.log('flashChipId '+flashChipId + 
                                 ' pageSize ' + flashInfo[flashChipId].pageSize + 
                                 ' pages '+ flashInfo[flashChipId].pageCount +
-                                ' userSize '+ FLASH_USER_ZONE_SIZE);
-                    size = (flashInfo[flashChipId].pageSize * 
-                           (flashInfo[flashChipId].pageCount - flashInfo[flashChipId].pagesPerSector)) + FLASH_USER_ZONE_SIZE;
+                                ' media start page '+ FLASH_MEDIA_START_PAGE);
+
+                    size = (flashInfo[flashChipId].pageSize * flashInfo[flashChipId].pageCount);
+
+                    if (!FLASH_EXPORT_ALL) {
+                        // export skips the media partition
+                        size -= (flashInfo[flashChipId].pageSize * (flashInfo[flashChipId].pagesPerSector - FLASH_MEDIA_START_PAGE));
+                    }
                 }
                 else
                 {
@@ -985,17 +1093,26 @@ function onDataReceived(reportId, data)
             }
             // data packet
             packet = new Uint8Array(data.slice(2,2+len));
-            if ((packet.length + exportDataOffset) > exportDataUint8.length)
+            if ((packet.length + exportDataOffset) < exportDataUint8.length)
             {
-                var overflow = (packet.length + exportDataOffset) - exportDataUint8.length;
-                console.log('error packet overflows buffer by '+overflow+' bytes');
-                exportDataOffset += packet.length;
-            } else {
                 exportDataUint8.set(packet, exportDataOffset);
                 exportDataOffset += packet.length;
                 exportProgressBar.progressbar('value', (exportDataOffset * 100) / exportDataUint8.length);
                 args = new Uint8Array([1]);     // request next packet
                 sendRequest(cmd, args);
+            } else {
+                if ((packet.length + exportDataOffset) > exportDataUint8.length)
+                {
+                    var overflow = (packet.length + exportDataOffset) - exportDataUint8.length;
+                    console.log('error packet overflows buffer by '+overflow+' bytes');
+                }
+
+                // done, write the file to disk
+                saveToEntry(exportDataEntry, exportDataUint8) 
+                exportData = null;
+                exportDataUint8 = null;
+                exportDataOffset = 0;
+                exportDataEntry = null;;
             }
             break;
 
@@ -1023,7 +1140,7 @@ function onDataReceived(reportId, data)
 
         case CMD_ERASE_EEPROM:
         case CMD_ERASE_FLASH:
-        case CMD_ERASE_SMC:
+        case CMD_ERASE_SMARTCARD:
             log('#developerLog', (bytes[2] == 1) ? 'succeeded\n' : 'failed\n');
             break;
 
@@ -1050,7 +1167,13 @@ function onDataReceived(reportId, data)
         {
             var ok = bytes[2];
             if (ok == 0) {
-                log('#importLog', 'import denied\n');
+                remainder = importData.data.byteLength - importData.offset;
+                if (remainder > 0) {
+                    log('#importLog', 'import halted, '+remainder+' bytes left\n');
+                } else {
+                    log('#importLog', 'import finished\n');
+                }
+                importData = null;
             } else {
                 sendNextPacket(CMD_IMPORT_EEPROM, importData);
             }
@@ -1061,13 +1184,19 @@ function onDataReceived(reportId, data)
             log('#messageLog', 'unknown command '+cmd+'\n');
             break;
     }
-    chrome.hid.receive(connection, onDataReceived);
+    if (connection) {
+        chrome.hid.receive(connection, onDataReceived);
+    }
 };
 
 function sendMsg(msg)
 {
     if (debug) {
-        console.log('sending '+JSON.stringify(new Uint8Array(msg)));
+        msgUint8 = new Uint8Array(msg);
+        // don't output the CMD_VERSION command since this is the keep alive
+        if (msgUint8[1] != CMD_VERSION) {
+            console.log('sending '+JSON.stringify(new Uint8Array(msg)));
+        }
     }
     chrome.hid.send(connection, 0, msg, function() 
     {
@@ -1083,6 +1212,9 @@ function sendMsg(msg)
                     console.log('Failed to send to device: '+chrome.runtime.lastError.message);
                 }
                 log('#messageLog', 'Disconnected from mooltipass\n');
+                if (clientId) {
+                    chrome.runtime.sendMessage(clientId, {type: 'disconnected'});
+                }
                 reset();
             }
         }					
@@ -1108,6 +1240,11 @@ function sendPing()
  */
 function onDeviceFound(devices) 
 {
+    if (devices.length <= 0)
+    {
+        return;
+    }
+
     var ind = devices.length - 1;
     console.log('Found ' + devices.length + ' devices.');
     console.log('Device ' + devices[ind].deviceId + ' vendor' + devices[ind].vendorId + ' product ' + devices[ind].productId);
@@ -1115,6 +1252,7 @@ function onDeviceFound(devices)
     var devId = devices[ind].deviceId;
 
     console.log('Connecting to device '+devId);
+    log('#messageLog', 'Connecting to device...\n');
     chrome.hid.connect(devId, function(connectInfo) 
     {
         if (!chrome.runtime.lastError) 

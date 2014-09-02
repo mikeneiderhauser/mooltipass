@@ -30,12 +30,12 @@
 
 // Prototypes
 void activateGuardKey(void);
-RET_TYPE isWheelTouched(void);
-RET_TYPE isButtonTouched(void);
 RET_TYPE initTouchSensing(void);
-RET_TYPE getTouchedButton(void);
 void activateProxDetection(void);
-RET_TYPE touchDetectionRoutine(void);
+uint8_t getLastRawWheelPosition(void);
+void touchClearCurrentDetections(void);
+uint8_t getWheelTouchDetectionQuarter(void);
+RET_TYPE touchDetectionRoutine(uint8_t led_mask);
 
 // AT42QT2120 ID
 #define AT42QT2120_ID       0x3E
@@ -162,32 +162,41 @@ RET_TYPE touchDetectionRoutine(void);
 
 // Macros
 #define isTouchChangeDetected()     !(PINF & (1 << PORTID_TOUCH_C))
-#define launchCalibrationCycle()    writeDataToTS(AT42QT2120_ADDR, REG_AT42QT_CALIB, 0x12)
-#define switchOnLeftButonLed()      writeDataToTS(AT42QT2120_ADDR, LEFT_LED_REGISTER, AT42QT2120_OUTPUT_H_VAL)
-#define switchOffLeftButonLed()     writeDataToTS(AT42QT2120_ADDR, LEFT_LED_REGISTER, AT42QT2120_OUTPUT_L_VAL)
-#define switchOnRightButonLed()     writeDataToTS(AT42QT2120_ADDR, RIGHT_LED_REGISTER, AT42QT2120_OUTPUT_H_VAL)
-#define switchOffRightButonLed()    writeDataToTS(AT42QT2120_ADDR, RIGHT_LED_REGISTER, AT42QT2120_OUTPUT_L_VAL)
-#define switchOnTopLeftWheelLed()   writeDataToTS(AT42QT2120_ADDR, WHEEL_TLEFT_LED_REGISTER, AT42QT2120_OUTPUT_H_VAL)
-#define switchOffTopLeftWheelLed()  writeDataToTS(AT42QT2120_ADDR, WHEEL_TLEFT_LED_REGISTER, AT42QT2120_OUTPUT_L_VAL)
-#define switchOnTopRightWheelLed()  writeDataToTS(AT42QT2120_ADDR, WHEEL_TRIGHT_LED_REGISTER, AT42QT2120_OUTPUT_H_VAL)
-#define switchOffTopRightWheelLed() writeDataToTS(AT42QT2120_ADDR, WHEEL_TRIGHT_LED_REGISTER, AT42QT2120_OUTPUT_L_VAL)
-#define switchOnBotLeftWheelLed()   writeDataToTS(AT42QT2120_ADDR, WHEEL_BLEFT_LED_REGISTER, AT42QT2120_OUTPUT_H_VAL)
-#define switchOffBotLeftWheelLed()  writeDataToTS(AT42QT2120_ADDR, WHEEL_BLEFT_LED_REGISTER, AT42QT2120_OUTPUT_L_VAL)
-#define switchOnBotRightWheelLed()  writeDataToTS(AT42QT2120_ADDR, WHEEL_BRIGHT_LED_REGISTER, AT42QT2120_OUTPUT_H_VAL)
-#define switchOffBotRightWheelLed() writeDataToTS(AT42QT2120_ADDR, WHEEL_BRIGHT_LED_REGISTER, AT42QT2120_OUTPUT_L_VAL)
+#define launchCalibrationCycle()    writeDataToTS(REG_AT42QT_CALIB, 0x12)
+#define switchOnLeftButonLed()      writeDataToTS(LEFT_LED_REGISTER, AT42QT2120_OUTPUT_H_VAL)
+#define switchOffLeftButonLed()     writeDataToTS(LEFT_LED_REGISTER, AT42QT2120_OUTPUT_L_VAL)
+#define switchOnRightButonLed()     writeDataToTS(RIGHT_LED_REGISTER, AT42QT2120_OUTPUT_H_VAL)
+#define switchOffRightButonLed()    writeDataToTS(RIGHT_LED_REGISTER, AT42QT2120_OUTPUT_L_VAL)
+#define switchOnTopLeftWheelLed()   writeDataToTS(WHEEL_TLEFT_LED_REGISTER, AT42QT2120_OUTPUT_H_VAL)
+#define switchOffTopLeftWheelLed()  writeDataToTS(WHEEL_TLEFT_LED_REGISTER, AT42QT2120_OUTPUT_L_VAL)
+#define switchOnTopRightWheelLed()  writeDataToTS(WHEEL_TRIGHT_LED_REGISTER, AT42QT2120_OUTPUT_H_VAL)
+#define switchOffTopRightWheelLed() writeDataToTS(WHEEL_TRIGHT_LED_REGISTER, AT42QT2120_OUTPUT_L_VAL)
+#define switchOnBotLeftWheelLed()   writeDataToTS(WHEEL_BLEFT_LED_REGISTER, AT42QT2120_OUTPUT_H_VAL)
+#define switchOffBotLeftWheelLed()  writeDataToTS(WHEEL_BLEFT_LED_REGISTER, AT42QT2120_OUTPUT_L_VAL)
+#define switchOnBotRightWheelLed()  writeDataToTS(WHEEL_BRIGHT_LED_REGISTER, AT42QT2120_OUTPUT_H_VAL)
+#define switchOffBotRightWheelLed() writeDataToTS(WHEEL_BRIGHT_LED_REGISTER, AT42QT2120_OUTPUT_L_VAL)
 #define switchOffButtonWheelLeds()  switchOffLeftButonLed(); switchOffRightButonLed(); switchOffTopLeftWheelLed(); switchOffTopRightWheelLed(); switchOffBotLeftWheelLed(); switchOffBotRightWheelLed();
 #define switchOnButtonWheelLeds()   switchOnLeftButonLed(); switchOnRightButonLed();  switchOnTopLeftWheelLed(); switchOnTopRightWheelLed(); switchOnBotLeftWheelLed(); switchOnBotRightWheelLed();
 
 // Touch detect defines
 #define TOUCH_PRESS_MASK    (RETURN_LEFT_PRESSED | RETURN_RIGHT_PRESSED | RETURN_WHEEL_PRESSED | RETURN_PROX_DETECTION)
 
-// Other defines
-#define NB_KEYS         6
-#define TOUCH_LEFT      0
-#define TOUCH_TLEFT     1
-#define TOUCH_TRIGHT    2
-#define TOUCH_BLEFT     3
-#define TOUCH_BRIGHT    4
-#define TOUCH_RIGHT     5
+// Touch detection defines
+#define NB_KEYS                         6
+#define TOUCHPOS_WHEEL_TLEFT            0
+#define TOUCHPOS_WHEEL_TRIGHT           1
+#define TOUCHPOS_WHEEL_BLEFT            2
+#define TOUCHPOS_WHEEL_BRIGHT           3
+#define TOUCHPOS_LEFT                   4
+#define TOUCHPOS_RIGHT                  5
+
+// LED mask define
+#define LED_MASK_WHEEL_TLEFT            (1 << TOUCHPOS_WHEEL_TLEFT)
+#define LED_MASK_WHEEL_TRIGHT           (1 << TOUCHPOS_WHEEL_TRIGHT)
+#define LED_MASK_WHEEL_BLEFT            (1 << TOUCHPOS_WHEEL_BLEFT)
+#define LED_MASK_WHEEL_BRIGHT           (1 << TOUCHPOS_WHEEL_BRIGHT)
+#define LED_MASK_LEFT                   (1 << TOUCHPOS_LEFT)
+#define LED_MASK_RIGHT                  (1 << TOUCHPOS_RIGHT)
+#define LED_MASK_WHEEL                  (LED_MASK_WHEEL_TLEFT|LED_MASK_WHEEL_TRIGHT|LED_MASK_WHEEL_BLEFT|LED_MASK_WHEEL_BRIGHT)
 
 #endif /* TOUCH_HIGHER_LEVEL_FUNCTIONS_H_ */

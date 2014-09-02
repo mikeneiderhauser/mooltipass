@@ -21,20 +21,20 @@
  *  \brief  Test functions
  *  Copyright [2014] [Mathieu Stephan]
  */
- #include <util/delay.h>
 #include "touch_higher_level_functions.h"
 #include "aes256_nessie_test.h"
 #include "aes256_ctr_test.h"
 #include "hid_defines.h"
 #include "mooltipass.h"
 #include "flash_test.h"
-#include "node_test.h"
+//#include "node_test.h"
 #include "defines.h"
 #include "entropy.h"
 #include "oledmp.h"
 #include "touch.h"
 #include "pwm.h"
 #include "usb.h"
+#include "gui.h"
 
 
 /*! \fn     beforeFlashInitTests(void)
@@ -180,38 +180,40 @@ void afterTouchInitTests(void)
     uint16_t temp_uint = 0;
     RET_TYPE temp_ret_type = RETURN_RIGHT_PRESSED;
     
-    setPwmDc(MAX_PWM_VAL);
+    activityDetectedRoutine();
     oledWriteActiveBuffer();
+    activateProxDetection();
     while(!(temp_ret_type & RETURN_LEFT_PRESSED))
     {
         if (temp_ret_type != RETURN_NO_CHANGE)
         {
             oledSetXY(0,0);
-            readDataFromTS(AT42QT2120_ADDR, REG_AT42QT_SLIDER_POS, &temp_byte);
+            readDataFromTS(REG_AT42QT_SLIDER_POS, &temp_byte);
             printf("POS: %02X\r\n", temp_byte);
-            readDataFromTS(AT42QT2120_ADDR, REG_AT42QT_DET_STAT, &temp_byte);
+            readDataFromTS(REG_AT42QT_DET_STAT, &temp_byte);
             printf("DET STAT: %02X\r\n", temp_byte);
-            readDataFromTS(AT42QT2120_ADDR, REG_AT42QT_KEY_STAT1, &temp_byte);
+            readDataFromTS(REG_AT42QT_KEY_STAT1, &temp_byte);
             printf("DET1: %02X\r\n", temp_byte);
-            readDataFromTS(AT42QT2120_ADDR, REG_AT42QT_KEY_STAT2, &temp_byte);
+            readDataFromTS(REG_AT42QT_KEY_STAT2, &temp_byte);
             printf("DET2: %02X\r\n", temp_byte);
             printf("counter: %04X\r\n", temp_uint++);
         }
         temp_ret_type = touchDetectionRoutine();     
     }
     activateGuardKey();
+    launchCalibrationCycle();
     while(1)
     {
         if (temp_ret_type != RETURN_NO_CHANGE)
         {            
             oledSetXY(0,0);
-            readDataFromTS(AT42QT2120_ADDR, REG_AT42QT_SLIDER_POS, &temp_byte);
+            readDataFromTS(REG_AT42QT_SLIDER_POS, &temp_byte);
             printf("POS: %02X\r\n", temp_byte);
-            readDataFromTS(AT42QT2120_ADDR, REG_AT42QT_DET_STAT, &temp_byte);
+            readDataFromTS(REG_AT42QT_DET_STAT, &temp_byte);
             printf("DET STAT: %02X\r\n", temp_byte);
-            readDataFromTS(AT42QT2120_ADDR, REG_AT42QT_KEY_STAT1, &temp_byte);
+            readDataFromTS(REG_AT42QT_KEY_STAT1, &temp_byte);
             printf("DET1: %02X\r\n", temp_byte);
-            readDataFromTS(AT42QT2120_ADDR, REG_AT42QT_KEY_STAT2, &temp_byte);
+            readDataFromTS(REG_AT42QT_KEY_STAT2, &temp_byte);
             printf("DET2: %02X\r\n", temp_byte);
             printf("counter: %04X\r\n", temp_uint++);
         }

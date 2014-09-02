@@ -5,9 +5,6 @@
 #include <stdint.h>
 #include "usb.h"
 
-/* Plugin command set define */
-#define DEV_PLUGIN_COMMS
-
 /* USB mooltipass hid commands */
 #define CMD_DEBUG               0x01
 #define CMD_PING                0x02
@@ -36,6 +33,10 @@
 #define CMD_SET_FONT            0x44
 #define CMD_EXPORT_FLASH_START  0x45
 #define CMD_EXPORT_EEPROM_START 0x46
+#define CMD_SET_BOOTLOADER_PWD  0x47
+#define CMD_JUMP_TO_BOOTLOADER  0x48
+#define CMD_CLONE_SMARTCARD     0x49
+#define CMD_STACK_FREE          0x50
     
 /* Packet format defines     */
 #define HID_LEN_FIELD       0x00
@@ -46,6 +47,7 @@
 #define PLUGIN_BYTE_ERROR   0x00
 #define PLUGIN_BYTE_OK      0x01
 #define PLUGIN_BYTE_NA      0x02
+#define PLUGIN_BYTE_NOCARD  0x03
 
 /* Packet defines */
 #define PACKET_EXPORT_SIZE  (RAWHID_TX_SIZE-HID_DATA_START)
@@ -64,8 +66,8 @@ typedef struct
     uint8_t cmd;
     union 
     {
-	    uint8_t data[RAWHID_RX_SIZE-HID_DATA_START];
-	    uint32_t addr;
+        uint8_t data[RAWHID_RX_SIZE-HID_DATA_START];
+        uint32_t addr;
     } body;
 } usbMsg_t;
 

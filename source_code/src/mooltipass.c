@@ -23,48 +23,48 @@
  */
 #include <util/atomic.h>
 #include <avr/eeprom.h>
-#include <util/delay.h>
 #include <stdlib.h>
 #include <avr/io.h>
 #include <string.h>
 #include <stdio.h>
 #include "smart_card_higher_level_functions.h"
 #include "touch_higher_level_functions.h"
+#include "gui_smartcard_functions.h"
+#include "gui_screen_functions.h"
+#include "gui_basic_functions.h"
+#include "logic_aes_and_comms.h"
 #include "eeprom_addresses.h"
+#include "watchdog_driver.h"
+#include "logic_smartcard.h"
 #include "usb_cmd_parser.h"
-//#include "had_mooltipass.h"
-#include "userhandling.h"
+#include "timer_manager.h"
+#include "logic_eeprom.h"
 #include "mooltipass.h"
 #include "interrupts.h"
 #include "smartcard.h"
 #include "flash_mem.h"
-#include "node_mgmt.h"
-#include "node_test.h"
 #include "defines.h"
 #include "entropy.h"
 #include "oledmp.h"
+#include "delays.h"
 #include "utils.h"
 #include "tests.h"
 #include "touch.h"
+#include "anim.h"
 #include "spi.h"
 #include "pwm.h"
 #include "usb.h"
-#include "gui.h"
 
 // Define the bootloader function
-#ifdef AVR_BOOTLOADER_PROGRAMMING
-    bootloader_f_ptr_type start_bootloader = (bootloader_f_ptr_type)0x3800; 
-#endif
+bootloader_f_ptr_type start_bootloader = (bootloader_f_ptr_type)0x3800;
 // Flag to inform if the caps lock timer is armed
 volatile uint8_t wasCapsLockTimerArmed = FALSE;
-// Caps lock timer
-volatile uint16_t capsLockTimer = 0;
 
 
-/*! \fn     disable_jtag(void)
+/*! \fn     disableJTAG(void)
 *   \brief  Disable the JTAG module
 */
-void disable_jtag(void)
+static inline void disableJTAG(void)
 {
     unsigned char temp;
 
@@ -74,53 +74,79 @@ void disable_jtag(void)
     MCUCR = temp;
 }
 
-/*!	\fn		capsLockTick(void)
-*	\brief	Function called every ms by interrupt
-*/
-void capsLockTick(void)
-{
-    if (capsLockTimer != 0)
-    {
-        capsLockTimer--;
-    }
-}
-
 /*! \fn     main(void)
 *   \brief  Main function
 */
 int main(void)
 {
-    uint8_t temp_ctr_val[AES256_CTR_LENGTH];
     uint8_t usb_buffer[RAWHID_TX_SIZE];
-    uint8_t* temp_buffer = usb_buffer;
     RET_TYPE flash_init_result;
     RET_TYPE touch_init_result;
     RET_TYPE card_detect_ret;
-    RET_TYPE temp_rettype;
-    uint8_t temp_user_id;
+    
+    // Check if we were resetted and want to go to the bootloader
+    if (eeprom_read_word((uint16_t*)EEP_BOOTKEY_ADDR) == BOOTLOADER_BOOTKEY)
+    {
+        // Disable WDT
+        wdt_reset();
+        wdt_clear_flag();
+        wdt_change_enable();
+        wdt_stop();
+        // Store correct bootkey
+        eeprom_write_word((uint16_t*)EEP_BOOTKEY_ADDR, CORRECT_BOOTKEY);
+        // Jump to bootloader
+        start_bootloader();
+    }
 
     /* Check if a card is inserted in the Mooltipass to go to the bootloader */
     #ifdef AVR_BOOTLOADER_PROGRAMMING
-        disable_jtag();                 // Disable JTAG to gain access to pins
-        DDR_SC_DET &= ~(1 << PORTID_SC_DET);
-        PORT_SC_DET |= (1 << PORTID_SC_DET);
-        _delay_ms(100);    
+        /* Disable JTAG to get access to the pins */
+        disableJTAG();
+        /* Init SMC port */
+        initPortSMC();
+        /* Delay for detection */
+        for (uint16_t i = 0; i < 2000; i++) asm volatile ("NOP");
         #if defined(HARDWARE_V1)
         if (PIN_SC_DET & (1 << PORTID_SC_DET))
         #elif defined(HARDWARE_OLIVIER_V1)
         if (!(PIN_SC_DET & (1 << PORTID_SC_DET)))
         #endif
         {
-            start_bootloader();
+            uint16_t tempuint16;
+            /* What follows is a copy from firstDetectFunctionSMC() */
+            /* Enable power to the card */
+            PORT_SC_POW &= ~(1 << PORTID_SC_POW);
+            /* Default state: PGM to 0 and RST to 1 */
+            PORT_SC_PGM &= ~(1 << PORTID_SC_PGM);
+            DDR_SC_PGM |= (1 << PORTID_SC_PGM);
+            PORT_SC_RST |= (1 << PORTID_SC_RST);
+            DDR_SC_RST |= (1 << PORTID_SC_RST);
+            /* Activate SPI port */
+            PORT_SPI_NATIVE &= ~((1 << SCK_SPI_NATIVE) | (1 << MOSI_SPI_NATIVE));
+            DDRB |= (1 << SCK_SPI_NATIVE) | (1 << MOSI_SPI_NATIVE);
+            setSPIModeSMC();
+            /* Let the card come online */
+            for (uint16_t i = 0; i < 2000; i++) asm volatile ("NOP");
+            /* Check smart card FZ */
+            readFabricationZone((uint8_t*)&tempuint16);
+            if ((swap16(tempuint16)) != SMARTCARD_FABRICATION_ZONE)
+            {
+                removeFunctionSMC();
+                start_bootloader();
+            }
+            else
+            {
+                removeFunctionSMC();
+            }
         }
     #endif
 
     CPU_PRESCALE(0);                    // Set for 16MHz clock
-    _delay_ms(500);                     // Let the power settle
-    disable_jtag();                     // Disable JTAG to gain access to pins
+    disableJTAG();                      // Disable JTAG to gain access to pins
     initPortSMC();                      // Initialize smart card port
     initPwm();                          // Initialize PWM controller
-    initIRQ();                          // Initialize interrupts    
+    initIRQ();                          // Initialize interrupts
+    powerSettlingDelay();               // Let the power settle   
     initUsb();                          // Initialize USB controller
     initI2cPort();                      // Initialize I2C interface
     entropyInit();                      // Initialize avrentropy library
@@ -155,11 +181,16 @@ int main(void)
     oledWriteActiveBuffer();
     
     // First time initializations
-    if (eeprom_read_word((uint16_t*)EEP_BOOTKEY_ADDR) != 0xDEAD)
+    if (eeprom_read_word((uint16_t*)EEP_BOOTKEY_ADDR) != CORRECT_BOOTKEY)
     {
+        // Erase everything non graphic in flash
         eraseFlashUsersContents();
+        // Erase # of cards and # of users
         firstTimeUserHandlingInit();
-        eeprom_write_word((uint16_t*)EEP_BOOTKEY_ADDR, 0xDEAD);
+        // Set bootloader password bool to FALSE
+        eeprom_write_byte((uint8_t*)EEP_BOOT_PWD_SET, FALSE);
+        // Store correct bootkey
+        eeprom_write_word((uint16_t*)EEP_BOOTKEY_ADDR, CORRECT_BOOTKEY);
     }
     
     // Check if we can initialize the touch sensing element
@@ -173,7 +204,8 @@ int main(void)
     // Test procedure to check that all HW is working
     //#define HW_TEST_PROC
     #ifdef HW_TEST_PROC
-        oledSetXY(0,0);        
+        oledSetXY(0,0);
+        RET_TYPE temp_rettype;    
         if (flash_init_result == RETURN_OK)
         {
             printf_P(PSTR("FLASH OK\r\n"));
@@ -226,13 +258,14 @@ int main(void)
     #endif
     
     // Stop the Mooltipass if we can't communicate with the flash or the touch interface
-    #ifdef HARDWARE_OLIVIER_V1
-        while ((flash_init_result != RETURN_OK) && (touch_init_result != RETURN_OK));
+    #if defined(HARDWARE_OLIVIER_V1)
+        while ((flash_init_result != RETURN_OK) || (touch_init_result != RETURN_OK));
     #endif
 
-    // Write inactive buffer & default bitmap
+    // Write inactive buffer & go to startup screen
     oledWriteInactiveBuffer();
-    oledBitmapDrawFlash(0, 0, 0, OLED_SCROLL_UP);
+    guiSetCurrentScreen(SCREEN_DEFAULT_NINSERTED);
+    guiGetBackToCurrentScreen();
         
     // Launch the after HaD logo display tests
     #ifdef TESTS_ENABLED
@@ -243,17 +276,39 @@ int main(void)
     for (uint16_t i = 0; i < MAX_PWM_VAL; i++)
     {
         setPwmDc(i);
-        _delay_us(888);
+        timerBasedDelayMs(0);
     }
     activityDetectedRoutine();
     launchCalibrationCycle();
+    touchClearCurrentDetections();
     
     while (1)
-    {
-        card_detect_ret = isCardPlugged();
-        
+    {        
         // Call GUI routine
         guiMainLoop();
+        
+        // Check if a card just got inserted / removed
+        card_detect_ret = isCardPlugged();
+        
+        // Do appropriate actions on smartcard insertion / removal
+        if (card_detect_ret == RETURN_JDETECT)
+        {
+            // Light up the Mooltipass and call the dedicated function
+            activityDetectedRoutine();
+            handleSmartcardInserted();
+        }
+        else if (card_detect_ret == RETURN_JRELEASED)
+        {
+            // Light up the Mooltipass and call the dedicated function
+            activityDetectedRoutine();
+            handleSmartcardRemoved();
+            
+            // Set correct screen
+            guiDisplayInformationOnScreen(ID_STRING_CARD_REMOVED);
+            guiSetCurrentScreen(SCREEN_DEFAULT_NINSERTED);
+            userViewDelay();
+            guiGetBackToCurrentScreen();
+        }
         
         // Process possible incoming data
         if(usbRawHidRecv(usb_buffer, USB_READ_TIMEOUT) == RETURN_COM_TRANSF_OK)
@@ -261,134 +316,19 @@ int main(void)
             usbProcessIncoming(usb_buffer);
         }  
         
-        // Two quick caps lock presses wake up the device
-        if ((capsLockTimer == 0) && (getKeyboardLeds() & HID_CAPS_MASK) && (wasCapsLockTimerArmed == FALSE))
+        // Two quick caps lock presses wakes up the device        
+        if ((hasTimerExpired(TIMER_CAPS, FALSE) == TIMER_EXPIRED) && (getKeyboardLeds() & HID_CAPS_MASK) && (wasCapsLockTimerArmed == FALSE))
         {
-            ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
-            {
-                wasCapsLockTimerArmed = TRUE;
-                capsLockTimer = CAPS_LOCK_DEL;
-            }
+            wasCapsLockTimerArmed = TRUE;
+            activateTimer(TIMER_CAPS, CAPS_LOCK_DEL);
         }
-        else if ((capsLockTimer != 0) && !(getKeyboardLeds() & HID_CAPS_MASK))
+        else if ((hasTimerExpired(TIMER_CAPS, FALSE) == TIMER_RUNNING) && !(getKeyboardLeds() & HID_CAPS_MASK))
         {
             activityDetectedRoutine();
         }
-        else if ((capsLockTimer == 0) && !(getKeyboardLeds() & HID_CAPS_MASK))
+        else if ((hasTimerExpired(TIMER_CAPS, FALSE) == TIMER_EXPIRED) && !(getKeyboardLeds() & HID_CAPS_MASK))
         {
             wasCapsLockTimerArmed = FALSE;            
-        }
-        
-        if (card_detect_ret == RETURN_JDETECT)                          // Card just detected
-        {
-            temp_rettype = cardDetectedRoutine();
-            activityDetectedRoutine();
-
-            // Problem with card
-            if ((temp_rettype == RETURN_MOOLTIPASS_PB) || (temp_rettype == RETURN_MOOLTIPASS_INVALID))
-            {
-                oledClear();
-                oledPutstrXY_P(0, 28, OLED_CENTRE, PSTR("PB with card"));
-                oledFlipBuffers(OLED_SCROLL_UP, 5);
-                printSMCDebugInfoToScreen();
-                removeFunctionSMC();                                    // Shut down card reader
-            }
-            else if (temp_rettype == RETURN_MOOLTIPASS_BLOCKED)         // Card blocked
-            {
-                oledClear();
-                oledPutstrXY_P(0, 28, OLED_CENTRE, PSTR("Card blocked"));
-                oledFlipBuffers(OLED_SCROLL_UP, 5);
-                printSMCDebugInfoToScreen();
-                removeFunctionSMC();                                    // Shut down card reader
-            }
-            else if (temp_rettype == RETURN_MOOLTIPASS_BLANK)           // Blank Mooltipass card
-            {
-                // Ask the user to setup his mooltipass card
-                if (guiAskForConfirmation(PSTR("Create new mooltipass user?")) == RETURN_OK)
-                {
-                    // Create a new user with his new smart card
-                    if (addNewUserAndNewSmartCard(SMARTCARD_DEFAULT_PIN) == RETURN_OK)
-                    {
-                        #ifdef GENERAL_LOGIC_OUTPUT_USB
-                            usbPutstr_P(PSTR("New user and new card added\n"));
-                        #endif
-                        
-                        oledClear();
-                        oledPutstrXY_P(0, 28, OLED_CENTRE, PSTR("User added"));
-                        oledFlipBuffers(OLED_SCROLL_UP, 5);
-                        setSmartCardInsertedUnlocked();
-                    }
-                    else
-                    {
-                        #ifdef GENERAL_LOGIC_OUTPUT_USB
-                            usbPutstr_P(PSTR("Couldn't add new user"));
-                        #endif
-                        
-                        oledClear();
-                        oledPutstrXY_P(0, 28, OLED_CENTRE, PSTR("Couldn't add"));
-                        oledFlipBuffers(OLED_SCROLL_UP, 5);
-                    }
-                    _delay_ms(2000);
-                    oledBitmapDrawFlash(0, 0, 0, OLED_SCROLL_UP);
-                }
-                printSMCDebugInfoToScreen();                            // Print smartcard info
-            }
-            else if (temp_rettype == RETURN_MOOLTIPASS_USER)            // Configured mooltipass card
-            {
-                // Here we should ask the user for his pin and call mooltipassDetectedRoutine
-                readCodeProtectedZone(temp_buffer);
-                #ifdef GENERAL_LOGIC_OUTPUT_USB
-                    usbPrintf_P(PSTR("%d cards\r\n"), getNumberOfKnownCards());
-                    usbPrintf_P(PSTR("%d users\r\n"), getNumberOfKnownUsers());
-                #endif
-                
-                // See if we know the card and if so fetch the user id & CTR nonce
-                if (getUserIdFromSmartCardCPZ(temp_buffer, temp_ctr_val, &temp_user_id) == RETURN_OK)
-                {
-                    #ifdef GENERAL_LOGIC_OUTPUT_USB
-                        usbPrintf_P(PSTR("Card ID found with user %d\r\n"), temp_user_id);
-                    #endif
-                    
-                    // Developer mode, enter default pin code
-                    #ifdef NO_PIN_CODE_REQUIRED
-                        mooltipassDetectedRoutine(SMARTCARD_DEFAULT_PIN);
-                        readAES256BitsKey(temp_buffer);
-                        initUserFlashContext(temp_user_id);
-                        initEncryptionHandling(temp_buffer, temp_ctr_val);
-                        setSmartCardInsertedUnlocked();
-                        oledClear();
-                        oledPutstrXY_P(0, 28, OLED_CENTRE, PSTR("Card unlocked"));
-                        oledFlipBuffers(OLED_SCROLL_UP, 5);
-                        _delay_ms(2000);
-                        oledBitmapDrawFlash(0, 0, 0, OLED_SCROLL_UP);
-                    #endif
-                }
-                else
-                {
-                    oledClear();
-                    oledPutstrXY_P(0, 28, OLED_CENTRE, PSTR("Card ID not found"));
-                    oledFlipBuffers(OLED_SCROLL_UP, 5);
-                    _delay_ms(2000);
-                    oledBitmapDrawFlash(0, 0, 0, OLED_SCROLL_UP);
-                    
-                    // Developer mode, enter default pin code
-                    #ifdef NO_PIN_CODE_REQUIRED
-                        mooltipassDetectedRoutine(SMARTCARD_DEFAULT_PIN);
-                        setSmartCardInsertedUnlocked();
-                    #else
-                        removeFunctionSMC();                            // Shut down card reader
-                    #endif
-                    
-                    #ifdef GENERAL_LOGIC_OUTPUT_USB
-                        usbPutstr_P(PSTR("Card ID not found\r\n"));
-                    #endif
-                }
-                printSMCDebugInfoToScreen();
-            }
-        }
-        else if (card_detect_ret == RETURN_JRELEASED)                   // Card just released
-        {
-            oledBitmapDrawFlash(0, 0, 0, OLED_SCROLL_UP);
         }
     }
 }

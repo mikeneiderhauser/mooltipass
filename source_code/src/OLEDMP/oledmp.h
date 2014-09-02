@@ -166,6 +166,7 @@ int8_t oledBitmapDrawFlash(uint8_t x, uint8_t y, uint8_t fileId, uint8_t options
 void oledBitmapDraw(uint8_t x, uint8_t y, const void *image, uint8_t options);
 #endif
 
+void oledInvertDisplay(void);
 void oledSetDisplayStartLine(uint8_t line);
 void oledMoveDisplayStartLine(int8_t offset);
 void oledFlipBuffers(uint8_t mode, uint8_t delay);
@@ -191,7 +192,7 @@ void oledSetX(uint8_t col);
 
 void oledSetPixel(uint8_t x, uint8_t y, uint8_t colour);
 
-uint8_t oledGlyphWidth(char ch);
+uint8_t oledGlyphWidth(char ch, uint8_t *indp, glyph_t *glyphp);
 uint8_t oledGlyphHeight();
 uint8_t oledGlyphDraw(int16_t x, int16_t y, char ch, uint16_t colour, uint16_t bg);
 

@@ -113,6 +113,7 @@
         <avrgcc.common.outputfiles.lss>True</avrgcc.common.outputfiles.lss>
         <avrgcc.common.outputfiles.eep>True</avrgcc.common.outputfiles.eep>
         <avrgcc.common.outputfiles.srec>True</avrgcc.common.outputfiles.srec>
+        <avrgcc.common.outputfiles.usersignatures>False</avrgcc.common.outputfiles.usersignatures>
         <avrgcc.compiler.general.ChangeDefaultCharTypeUnsigned>True</avrgcc.compiler.general.ChangeDefaultCharTypeUnsigned>
         <avrgcc.compiler.general.ChangeDefaultBitFieldUnsigned>True</avrgcc.compiler.general.ChangeDefaultBitFieldUnsigned>
         <avrgcc.compiler.symbols.DefSymbols>
@@ -129,6 +130,8 @@
             <Value>../src/CARD</Value>
             <Value>../src/FLASH</Value>
             <Value>../src/GRAPHICS</Value>
+            <Value>../src/GUI</Value>
+            <Value>../src/LOGIC</Value>
             <Value>../src/NODEMGMT</Value>
             <Value>../src/OLED</Value>
             <Value>../src/OLEDMP</Value>
@@ -164,6 +167,7 @@
         <avrgcc.common.outputfiles.lss>True</avrgcc.common.outputfiles.lss>
         <avrgcc.common.outputfiles.eep>True</avrgcc.common.outputfiles.eep>
         <avrgcc.common.outputfiles.srec>True</avrgcc.common.outputfiles.srec>
+        <avrgcc.common.outputfiles.usersignatures>False</avrgcc.common.outputfiles.usersignatures>
         <avrgcc.compiler.general.ChangeDefaultCharTypeUnsigned>True</avrgcc.compiler.general.ChangeDefaultCharTypeUnsigned>
         <avrgcc.compiler.general.ChangeDefaultBitFieldUnsigned>True</avrgcc.compiler.general.ChangeDefaultBitFieldUnsigned>
         <avrgcc.compiler.symbols.DefSymbols>
@@ -180,6 +184,8 @@
             <Value>../src/CARD</Value>
             <Value>../src/FLASH</Value>
             <Value>../src/GRAPHICS</Value>
+            <Value>../src/GUI</Value>
+            <Value>../src/LOGIC</Value>
             <Value>../src/NODEMGMT</Value>
             <Value>../src/OLED</Value>
             <Value>../src/OLEDMP</Value>
@@ -247,6 +253,75 @@
     <Compile Include="src\CARD\smart_card_higher_level_functions.h">
       <SubType>compile</SubType>
     </Compile>
+    <Compile Include="src\GUI\gui.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\GUI\gui_basic_functions.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\GUI\gui_basic_functions.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\GUI\gui_credentials_functions.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\GUI\gui_credentials_functions.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\GUI\gui_pin_functions.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\GUI\gui_pin_functions.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\GUI\gui_screen_functions.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\GUI\gui_screen_functions.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\GUI\gui_smartcard_functions.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\GUI\gui_smartcard_functions.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\LOGIC\logic_eeprom.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\LOGIC\logic_eeprom.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\LOGIC\logic_aes_and_comms.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\LOGIC\logic_aes_and_comms.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\LOGIC\logic_fwflash_storage.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\LOGIC\logic_fwflash_storage.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\LOGIC\logic_smartcard.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\LOGIC\logic_smartcard.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\NODEMGMT\node_mgmt.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\stack.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\stack.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\timer_manager.c">
+      <SubType>compile</SubType>
+    </Compile>
     <Compile Include="src\defines.h">
       <SubType>compile</SubType>
     </Compile>
@@ -265,18 +340,6 @@
     <Compile Include="src\FLASH\flash_test.h">
       <SubType>compile</SubType>
     </Compile>
-    <Compile Include="src\gui.c">
-      <SubType>compile</SubType>
-    </Compile>
-    <Compile Include="src\gui.h">
-      <SubType>compile</SubType>
-    </Compile>
-    <Compile Include="src\had_mooltipass.h">
-      <SubType>compile</SubType>
-    </Compile>
-    <Compile Include="src\had_mooltipass_2.h">
-      <SubType>compile</SubType>
-    </Compile>
     <Compile Include="src\interrupts.c">
       <SubType>compile</SubType>
     </Compile>
@@ -289,16 +352,7 @@
     <Compile Include="src\mooltipass.h">
       <SubType>compile</SubType>
     </Compile>
-    <Compile Include="src\NODEMGMT\node_mgmt.c">
-      <SubType>compile</SubType>
-    </Compile>
     <Compile Include="src\NODEMGMT\node_mgmt.h">
-      <SubType>compile</SubType>
-    </Compile>
-    <Compile Include="src\NODEMGMT\node_test.c">
-      <SubType>compile</SubType>
-    </Compile>
-    <Compile Include="src\NODEMGMT\node_test.h">
       <SubType>compile</SubType>
     </Compile>
     <Compile Include="src\OLEDMP\anim.c">
@@ -349,6 +403,9 @@
     <Compile Include="src\tests.h">
       <SubType>compile</SubType>
     </Compile>
+    <Compile Include="src\timer_manager.h">
+      <SubType>compile</SubType>
+    </Compile>
     <Compile Include="src\TOUCH\touch.c">
       <SubType>compile</SubType>
     </Compile>
@@ -385,10 +442,10 @@
     <Compile Include="src\USB\usb_descriptors.h">
       <SubType>compile</SubType>
     </Compile>
-    <Compile Include="src\userhandling.c">
+    <Compile Include="src\UTILS\delays.c">
       <SubType>compile</SubType>
     </Compile>
-    <Compile Include="src\userhandling.h">
+    <Compile Include="src\UTILS\delays.h">
       <SubType>compile</SubType>
     </Compile>
     <Compile Include="src\UTILS\low_level_utils.c">
@@ -403,12 +460,23 @@
     <Compile Include="src\UTILS\utils.h">
       <SubType>compile</SubType>
     </Compile>
+    <Compile Include="src\version.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\version.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\watchdog_driver.h">
+      <SubType>compile</SubType>
+    </Compile>
   </ItemGroup>
   <ItemGroup>
     <Folder Include="src" />
     <Folder Include="src\CARD\" />
     <Folder Include="src\FLASH" />
     <Folder Include="src\AES" />
+    <Folder Include="src\GUI" />
+    <Folder Include="src\LOGIC" />
     <Folder Include="src\NODEMGMT" />
     <Folder Include="src\PWM\" />
     <Folder Include="src\RNG\" />
@@ -423,6 +491,9 @@
       <SubType>compile</SubType>
     </None>
     <None Include="src\AES\aes256_nessie_test.txt">
+      <SubType>compile</SubType>
+    </None>
+    <None Include="src\changelog.txt">
       <SubType>compile</SubType>
     </None>
   </ItemGroup>

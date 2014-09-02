@@ -23,37 +23,35 @@
 *    Author:   Mathieu Stephan
 */
 #include "smart_card_higher_level_functions.h"
+#include "gui_smartcard_functions.h"
+#include "logic_fwflash_storage.h"
+#include "gui_screen_functions.h"
+#include "logic_aes_and_comms.h"
 #include "eeprom_addresses.h"
+#include "watchdog_driver.h"
+#include "logic_smartcard.h"
 #include "usb_cmd_parser.h"
-#include "userhandling.h"
+#include "logic_eeprom.h"
 #include <avr/eeprom.h>
+#include "mooltipass.h"
 #include "node_mgmt.h"
 #include "flash_mem.h"
+#include "version.h"
 #include <string.h>
+#include "delays.h"
 #include "oledmp.h"
+#include "utils.h"
+#include "stack.h"
 #include "usb.h"
-#include "gui.h"
 
-// Current address in flash we need to export
-uint32_t current_flash_export_addr = 0;
-// Current address in eeprom we need to export
-uint16_t current_eeprom_export_addr = 0;
 // Bool to specify if we're writing user flash space
 uint8_t flash_import_user_space = FALSE;
-// Current page in flash where we're importing
-uint16_t current_flash_import_page = 0;
-// Temporary counter to align our data to flash pages
-uint16_t current_flash_import_page_pos = 0;
-// Current byte in eeprom we're importing
-uint16_t current_eeprom_import_pos = 0;
-// Bool to specify if user approved flash import
-uint8_t flash_import_approved = FALSE;
-// Bool to specify if user approved eeprom import
-uint8_t eeprom_import_approved = FALSE;
-// Bool to specify if user approved flash export
-uint8_t flash_export_approved = FALSE;
-// Bool to specify if user approved eeprom export
-uint8_t eeprom_export_approved = FALSE;
+// Operation unique identifier to know the current approved flash action
+uint8_t currentFlashOpUid;
+// One import/export address that may be used
+uint16_t flashOpCurAddr1;
+// Another import/export address that may be used
+uint16_t flashOpCurAddr2;
 
 
 /*! \fn     checkTextField(uint8_t* data, uint8_t len)
@@ -75,16 +73,25 @@ RET_TYPE checkTextField(uint8_t* data, uint8_t len, uint8_t max_len)
     }
 }
 
-/*! \fn     sendPluginOneByteAnswer(uint8_t command, uint8_t answer, uint8_t* data)
-*   \brief  Send a one byte message to the plugin
-*   \param  command The command we're answering
-*   \param  answer  The answer
-*   \param  data    Pointer to the buffer
+/*! \fn     approveImportExportMemoryOperation(uint8_t opUID, uint8_t* pluginAnswer)
+*   \brief  Approve a Flash/Eeprom import/export operation
+*   \param  opUID           Unique memory operation identifier
+*   \param  pluginAnswer    Pointer to the plugin answer byte
 */
-void sendPluginOneByteAnswer(uint8_t command, uint8_t answer, uint8_t* data)
+void approveImportExportMemoryOperation(uint8_t opUID, uint8_t* pluginAnswer)
 {
-    data[0] = answer;
-    pluginSendMessage(command, 1, (char*)data);
+    // Set all global vars to 0
+    flashOpCurAddr1 = 0;
+    flashOpCurAddr2 = 0;
+    currentFlashOpUid = 0;
+    *pluginAnswer = PLUGIN_BYTE_ERROR;
+    
+    // Ask permission to the user
+    if (guiAskForConfirmation(1, (confirmationText_t*)readStoredStringToBuffer(ID_STRING_APPROVEMEMOP)) == RETURN_OK)
+    {
+        currentFlashOpUid = opUID;
+        *pluginAnswer = PLUGIN_BYTE_OK;
+    }
 }
 
 /*! \fn     usbProcessIncoming(uint8_t* incomingData)
@@ -109,7 +116,10 @@ void usbProcessIncoming(uint8_t* incomingData)
     // Temp ret_type
     RET_TYPE temp_rettype;
 #endif
-
+    
+#ifdef DEV_PLUGIN_COMMS
+    char stack_str[10];
+#endif
     // Debug comms
     // USBDEBUGPRINTF_P(PSTR("usb: rx cmd 0x%02x len %u\n"), datacmd, datalen);
 
@@ -118,20 +128,19 @@ void usbProcessIncoming(uint8_t* incomingData)
         // ping command
         case CMD_PING :
         {
-            memcpy((void*)incomingData, (void*)msg->body.data, 2);
-            memcpy((void*)incomingData+2, (void*)msg->body.data+2, 2);
-            pluginSendMessage(CMD_PING, 4, (char*)incomingData);
-            break;
+            usbSendMessage(0, 6, msg);
+            return;
         }
 
         // version command
         case CMD_VERSION :
         {
-            incomingData[0] = MOOLT_VERSION_MAJOR;
-            incomingData[1] = MOOLT_VERSION_MINOR;
-            incomingData[2] = FLASH_CHIP;
-            pluginSendMessage(CMD_VERSION, 3, (char*)incomingData);
-            break;
+            msg->len = 3; // len + cmd + FLASH_CHIP
+            msg->cmd = CMD_VERSION;
+            msg->body.data[0] = FLASH_CHIP;
+            msg->len += getVersion((char*)&msg->body.data[1], sizeof(msg->body.data) - 1);
+            usbSendMessage(0, msg->len, msg);
+            return;
         }
 
 #ifdef USB_FEATURE_PLUGIN_COMMS
@@ -143,6 +152,11 @@ void usbProcessIncoming(uint8_t* incomingData)
                 plugin_return_value = PLUGIN_BYTE_ERROR;
                 USBPARSERDEBUGPRINTF_P(PSTR("setCtx: len %d too big\n"), datalen);
             }
+            else if (getSmartCardInsertedUnlocked() != TRUE)
+            {
+                plugin_return_value = PLUGIN_BYTE_NOCARD;
+                USBPARSERDEBUGPRINTF_P(PSTR("set context: no card\n"));                
+            }
             else if (setCurrentContext(msg->body.data, datalen) == RETURN_OK)
             {
                 plugin_return_value = PLUGIN_BYTE_OK;
@@ -153,7 +167,6 @@ void usbProcessIncoming(uint8_t* incomingData)
                 plugin_return_value = PLUGIN_BYTE_ERROR;
                 USBPARSERDEBUGPRINTF_P(PSTR("set context: \"%s\" failed\n"), msg->body.data);
             }
-            sendPluginOneByteAnswer(CMD_CONTEXT, plugin_return_value, incomingData);
             break;
         }
 
@@ -163,12 +176,13 @@ void usbProcessIncoming(uint8_t* incomingData)
             if (getLoginForContext((char*)incomingData) == RETURN_OK)
             {
                 // Use the buffer to store the login...
-                pluginSendMessage(CMD_GET_LOGIN, strlen((char*)incomingData), (char*)incomingData);
+                usbSendMessage(CMD_GET_LOGIN, strlen((char*)incomingData)+1, incomingData);
                 USBPARSERDEBUGPRINTF_P(PSTR("get login: \"%s\"\n"),(char *)incomingData);
+                return;
             }
             else
             {
-                sendPluginOneByteAnswer(CMD_GET_LOGIN, PLUGIN_BYTE_ERROR, incomingData);
+                plugin_return_value = PLUGIN_BYTE_ERROR;
                 USBPARSERDEBUGPRINTF_P(PSTR("get login: failed\n"));
             }
             break;
@@ -179,12 +193,13 @@ void usbProcessIncoming(uint8_t* incomingData)
         {
             if (getPasswordForContext((char*)incomingData) == RETURN_OK)
             {
-                pluginSendMessage(CMD_GET_PASSWORD, strlen((char*)incomingData), (char*)incomingData);
+                usbSendMessage(CMD_GET_PASSWORD, strlen((char*)incomingData)+1, incomingData);
                 USBPARSERDEBUGPRINTF_P(PSTR("get pass: \"%s\"\n"),(char *)incomingData);
+                return;
             }
             else
             {
-                sendPluginOneByteAnswer(CMD_GET_PASSWORD, PLUGIN_BYTE_ERROR, incomingData);
+                plugin_return_value = PLUGIN_BYTE_ERROR;
                 USBPARSERDEBUGPRINTF_P(PSTR("get pass: failed\n"));
             }
             break;
@@ -208,7 +223,6 @@ void usbProcessIncoming(uint8_t* incomingData)
                 plugin_return_value = PLUGIN_BYTE_ERROR;
                 USBPARSERDEBUGPRINTF_P(PSTR("set login: \"%s\" failed\n"),msg->body.data);
             }
-            sendPluginOneByteAnswer(CMD_SET_LOGIN, plugin_return_value, incomingData);
             break;
         }
 
@@ -230,7 +244,6 @@ void usbProcessIncoming(uint8_t* incomingData)
                 plugin_return_value = PLUGIN_BYTE_ERROR;
                 USBPARSERDEBUGPRINTF_P(PSTR("set pass: failed\n"));
             }
-            sendPluginOneByteAnswer(CMD_SET_PASSWORD, plugin_return_value, incomingData);
             break;
         }
 
@@ -239,7 +252,7 @@ void usbProcessIncoming(uint8_t* incomingData)
         {
             if (checkTextField(msg->body.data, datalen, NODE_CHILD_SIZE_OF_PASSWORD) == RETURN_NOK)
             {
-                sendPluginOneByteAnswer(CMD_CHECK_PASSWORD, PLUGIN_BYTE_ERROR, incomingData);
+                plugin_return_value = PLUGIN_BYTE_ERROR;
                 break;
             }
             temp_rettype = checkPasswordForContext(msg->body.data, datalen);
@@ -255,7 +268,6 @@ void usbProcessIncoming(uint8_t* incomingData)
             {
                 plugin_return_value = PLUGIN_BYTE_NA;
             }
-            sendPluginOneByteAnswer(CMD_CHECK_PASSWORD, plugin_return_value, incomingData);
             break;
         }
 
@@ -280,25 +292,16 @@ void usbProcessIncoming(uint8_t* incomingData)
                 plugin_return_value = PLUGIN_BYTE_ERROR;
                 USBPARSERDEBUGPRINTF_P(PSTR("add context: \"%s\" failed\n"),msg->body.data);
             }
-            sendPluginOneByteAnswer(CMD_ADD_CONTEXT, plugin_return_value, incomingData);
             break;
         }
 #endif
 
+#ifdef FLASH_BLOCK_IMPORT_EXPORT
         // flash export start
         case CMD_EXPORT_FLASH_START :
         {
-            if (guiAskForConfirmation(PSTR("Approve flash export?")) == RETURN_OK)
-            {
-                flash_export_approved = TRUE;
-                plugin_return_value = PLUGIN_BYTE_OK;
-            } 
-            else
-            {
-                flash_export_approved = FALSE;
-                plugin_return_value = PLUGIN_BYTE_ERROR;
-            }
-            sendPluginOneByteAnswer(CMD_EXPORT_FLASH_START, plugin_return_value, incomingData);
+            approveImportExportMemoryOperation(CMD_EXPORT_FLASH_START, &plugin_return_value);
+            guiGetBackToCurrentScreen();
             break;
         }
 
@@ -306,75 +309,62 @@ void usbProcessIncoming(uint8_t* incomingData)
         case CMD_EXPORT_FLASH :
         {
             uint8_t size = PACKET_EXPORT_SIZE;
-
-            // Check datalen for arg, check approval status
-            if ((datalen != 1) || (flash_export_approved == FALSE))
+            
+            // Check that the user approved
+            if (currentFlashOpUid != CMD_EXPORT_FLASH_START)
             {
-                break;
+                return;
             }
 
-            // Check if the plugin wants a fresh export
-            if (msg->body.data[0] == 0)
-            {
-                // Export start
-                current_flash_export_addr = 0x0000;
-            }
-
+            //flashOpCurAddr1 is the page
+            //flashOpCurAddr2 is the offset
             // Check if the export address is correct
-            if (current_flash_export_addr >= FLASH_SIZE)
+            if (flashOpCurAddr1 >= PAGE_COUNT)
             {
-                pluginSendMessage(CMD_EXPORT_FLASH_END, 0, (char*)incomingData);
+                usbSendMessage(CMD_EXPORT_FLASH_END, 0, NULL);
                 USBPARSERDEBUGPRINTF_P(PSTR("export: end\n"));
-                flash_export_approved = FALSE;
-                break;
+                currentFlashOpUid = 0;
+                return;
             }
 
-            // Check how much data we need in case we're close to the graphics section
-            if ((current_flash_export_addr < GRAPHIC_ZONE_START) && ((GRAPHIC_ZONE_START - current_flash_export_addr) < (uint32_t)PACKET_EXPORT_SIZE))
+            // Check how much data we need in case we're close to the page end
+            if ((BYTES_PER_PAGE - flashOpCurAddr2) < PACKET_EXPORT_SIZE)
             {
-                size = (uint8_t)(GRAPHIC_ZONE_START - current_flash_export_addr);
-            }
-
-            // Check how much data we need in case we're close to the flash end
-            if ((FLASH_SIZE - current_flash_export_addr) < (uint32_t)PACKET_EXPORT_SIZE)
-            {
-                size = (uint8_t)(FLASH_SIZE - current_flash_export_addr);
+                size = (uint8_t)(BYTES_PER_PAGE - flashOpCurAddr2);
             }
 
             // Get a block of data and send it, increment counter
-            flashRawRead(incomingData, current_flash_export_addr, size);
-            pluginSendMessageWithRetries(CMD_EXPORT_FLASH, size, (char*)incomingData, 255);
-            current_flash_export_addr += size;
+            readDataFromFlash(flashOpCurAddr1, flashOpCurAddr2, size, (void*)incomingData);
+            usbSendMessage(CMD_EXPORT_FLASH, size, incomingData);
+            //usbSendMessageWithRetries(CMD_EXPORT_FLASH, size, (char*)incomingData, 255);
+            flashOpCurAddr2 += size;
+            
+            if (flashOpCurAddr2 == BYTES_PER_PAGE)
+            {
+                flashOpCurAddr2 = 0;
+                flashOpCurAddr1++;
+            }
 
             // Skip over the graphics address if we're in that case
-            if (current_flash_export_addr == GRAPHIC_ZONE_START)
+            if (flashOpCurAddr1 == GRAPHIC_ZONE_PAGE_START)
             {
-                current_flash_export_addr = GRAPHIC_ZONE_END;
+                flashOpCurAddr1 = GRAPHIC_ZONE_PAGE_END;
             }
-            break;
+            return;
         }
         
         // flash export end
         case CMD_EXPORT_FLASH_END :
         {
-            flash_export_approved = FALSE;
-            break;
+            currentFlashOpUid = 0;
+            return;
         }
 
         // flash export start
         case CMD_EXPORT_EEPROM_START :
         {
-            if (guiAskForConfirmation(PSTR("Approve eeprom export?")) == RETURN_OK)
-            {
-                eeprom_export_approved = TRUE;
-                plugin_return_value = PLUGIN_BYTE_OK;
-            } 
-            else
-            {
-                eeprom_export_approved = FALSE;
-                plugin_return_value = PLUGIN_BYTE_ERROR;
-            }
-            sendPluginOneByteAnswer(CMD_EXPORT_EEPROM_START, plugin_return_value, incomingData);
+            approveImportExportMemoryOperation(CMD_EXPORT_EEPROM_START, &plugin_return_value);
+            guiGetBackToCurrentScreen();
             break;
         }
 
@@ -383,46 +373,41 @@ void usbProcessIncoming(uint8_t* incomingData)
         {
             uint8_t size = PACKET_EXPORT_SIZE;
 
-            // Check datalen for arg, check that export has been approved
-            if ((datalen != 1) || (eeprom_export_approved == FALSE))
+            // Check that the user approved
+            if (currentFlashOpUid != CMD_EXPORT_EEPROM_START)
             {
-                break;
+                return;
             }
 
-            // Check if the plugin wants a fresh export
-            if (msg->body.data[0] == 0)
-            {
-                // Export start
-                current_eeprom_export_addr = 0x0000;
-            }
-
+            //flashOpCurAddr1 is the current eeprom address
             // Check if the export address is correct
-            if (current_eeprom_export_addr >= EEPROM_SIZE)
+            if (flashOpCurAddr1 >= EEPROM_SIZE)
             {
-                pluginSendMessage(CMD_EXPORT_EEPROM_END, 0, (char*)incomingData);
+                usbSendMessage(CMD_EXPORT_EEPROM_END, 0, NULL);
                 USBPARSERDEBUGPRINTF_P(PSTR("export: end\n"));
-                eeprom_export_approved = FALSE;
-                break;
+                currentFlashOpUid = 0;
+                return;
             }
 
             // Check how much data we need
-            if ((EEPROM_SIZE - current_eeprom_export_addr) < PACKET_EXPORT_SIZE)
+            if ((EEPROM_SIZE - flashOpCurAddr1) < PACKET_EXPORT_SIZE)
             {
-                size = (uint8_t)(EEPROM_SIZE - current_eeprom_export_addr);
+                size = (uint8_t)(EEPROM_SIZE - flashOpCurAddr1);
             }
 
             // Get a block of data and send it, increment counter
-            eeprom_read_block(incomingData, (void*)current_eeprom_export_addr, size);
-            pluginSendMessageWithRetries(CMD_EXPORT_EEPROM, size, (char*)incomingData, 255);
-            current_eeprom_export_addr += size;
-            break;
+            eeprom_read_block(incomingData, (void*)flashOpCurAddr1, size);
+            usbSendMessage(CMD_EXPORT_EEPROM, size, (char*)incomingData);
+            //usbSendMessageWithRetries(CMD_EXPORT_EEPROM, size, (char*)incomingData, 255);
+            flashOpCurAddr1 += size;
+            return;
         }
         
         // end eeprom export
         case CMD_EXPORT_EEPROM_END :
         {
-            eeprom_export_approved = FALSE;
-            break;
+            currentFlashOpUid = 0;
+            return;
         }
 
         // import flash contents
@@ -432,34 +417,28 @@ void usbProcessIncoming(uint8_t* incomingData)
             if (datalen != 1)
             {
                 USBPARSERDEBUGPRINTF_P(PSTR("import: no param\n"));
-                break;
+                return;
             }
+            
+            // Ask user approval            
+            approveImportExportMemoryOperation(CMD_IMPORT_FLASH_BEGIN, &plugin_return_value);
 
+            //flashOpCurAddr1 is the page
+            //flashOpCurAddr2 is the offset
             // Check what we want to write
             if (msg->body.data[0] == 0x00)
             {
+                flashOpCurAddr1 = 0x0000;
                 flash_import_user_space = TRUE;
-                current_flash_import_page = 0x0000;
             }
             else
             {
                 flash_import_user_space = FALSE;
-                current_flash_import_page = GRAPHIC_ZONE_PAGE_START;
+                flashOpCurAddr1 = GRAPHIC_ZONE_PAGE_START;
             }
-
-            // Ask for user confirmation
-            if (guiAskForConfirmation(PSTR("Approve flash import?")) == RETURN_OK)
-            {
-                flash_import_approved = TRUE;
-                current_flash_import_page_pos = 0;
-                plugin_return_value = PLUGIN_BYTE_OK;
-            }
-            else
-            {
-                flash_import_approved = FALSE;
-                plugin_return_value = PLUGIN_BYTE_ERROR;
-            }
-            sendPluginOneByteAnswer(CMD_IMPORT_FLASH_BEGIN, plugin_return_value, incomingData);
+            
+            // Get back to normal screen
+            guiGetBackToCurrentScreen();
             break;
         }
 
@@ -467,40 +446,43 @@ void usbProcessIncoming(uint8_t* incomingData)
         case CMD_IMPORT_FLASH :
         {
             // Check if we actually approved the import, haven't gone over the flash boundaries, if we're correctly aligned page size wise
-            if ((flash_import_approved == FALSE) || (current_flash_import_page >= PAGE_COUNT) || (current_flash_import_page_pos + datalen > BYTES_PER_PAGE) || ((flash_import_user_space == FALSE) && (current_flash_import_page >= GRAPHIC_ZONE_PAGE_END)))
+            if ((currentFlashOpUid != CMD_IMPORT_FLASH_BEGIN) || (flashOpCurAddr1 >= PAGE_COUNT) || (flashOpCurAddr2 + datalen > BYTES_PER_PAGE) || ((flash_import_user_space == FALSE) && (flashOpCurAddr1 >= GRAPHIC_ZONE_PAGE_END)))
             {
                 plugin_return_value = PLUGIN_BYTE_ERROR;
-                flash_import_approved = FALSE;
+                currentFlashOpUid = 0;
             }
             else
             {
-                flashWriteBuffer(msg->body.data, current_flash_import_page_pos, datalen);
-                current_flash_import_page_pos+= datalen;
+                flashWriteBuffer(msg->body.data, flashOpCurAddr2, datalen);
+                flashOpCurAddr2+= datalen;
 
                 // If we just filled a page, flush it to the page
-                if (current_flash_import_page_pos == BYTES_PER_PAGE)
+                if (flashOpCurAddr2 == BYTES_PER_PAGE)
                 {
-                    flashWriteBufferToPage(current_flash_import_page);
-                    current_flash_import_page_pos = 0;
-                    current_flash_import_page++;
+                    flashWriteBufferToPage(flashOpCurAddr1);
+                    flashOpCurAddr2 = 0;
+                    flashOpCurAddr1++;
 
                     // If we are importing user contents, skip the graphics zone
-                    if ((flash_import_user_space == TRUE) && (current_flash_import_page == GRAPHIC_ZONE_PAGE_START))
+                    if ((flash_import_user_space == TRUE) && (flashOpCurAddr1 == GRAPHIC_ZONE_PAGE_START))
                     {
-                        current_flash_import_page = GRAPHIC_ZONE_PAGE_END;
+                        flashOpCurAddr1 = GRAPHIC_ZONE_PAGE_END;
                     }
                 }
                 plugin_return_value = PLUGIN_BYTE_OK;
             }
-            sendPluginOneByteAnswer(CMD_IMPORT_FLASH, plugin_return_value, incomingData);
             break;
         }
 
         // end flash import
         case CMD_IMPORT_FLASH_END :
         {
-            flash_import_approved = FALSE;
-            sendPluginOneByteAnswer(CMD_IMPORT_FLASH_END, PLUGIN_BYTE_OK, incomingData);
+            if ((currentFlashOpUid == CMD_IMPORT_FLASH_BEGIN) && (flashOpCurAddr2 != 0))
+            {
+                flashWriteBufferToPage(flashOpCurAddr1);
+            }
+            plugin_return_value = PLUGIN_BYTE_OK;
+            currentFlashOpUid = 0;
             break;
         }
 
@@ -508,45 +490,93 @@ void usbProcessIncoming(uint8_t* incomingData)
         case CMD_IMPORT_EEPROM_BEGIN :
         {
             // Ask for user confirmation
-            if (guiAskForConfirmation(PSTR("Approve eeprom import?")) == RETURN_OK)
-            {
-                current_eeprom_import_pos = 0;
-                eeprom_import_approved = TRUE;
-                plugin_return_value = PLUGIN_BYTE_OK;
-            }
-            else
-            {
-                eeprom_import_approved = FALSE;
-                plugin_return_value = PLUGIN_BYTE_ERROR;
-            }
-            sendPluginOneByteAnswer(CMD_IMPORT_EEPROM_BEGIN, plugin_return_value, incomingData);
+            approveImportExportMemoryOperation(CMD_IMPORT_EEPROM_BEGIN, &plugin_return_value);
+            guiGetBackToCurrentScreen();
             break;
         }
 
         // import flash contents
         case CMD_IMPORT_EEPROM :
         {
-            if ((eeprom_import_approved == FALSE) || ((current_eeprom_import_pos + datalen) >= EEPROM_SIZE))
+            // flashOpCurAddr1 is the current eeprom address
+            if ((currentFlashOpUid != CMD_IMPORT_EEPROM_BEGIN) || ((flashOpCurAddr1 + datalen) >= EEPROM_SIZE))
             {
                 plugin_return_value = PLUGIN_BYTE_ERROR;
-                eeprom_import_approved = FALSE;
+                currentFlashOpUid = 0;
             }
             else
             {
-                eeprom_write_block((void*)msg->body.data, (void*)current_eeprom_import_pos, datalen);
-                current_eeprom_import_pos+= datalen;
+                eeprom_write_block((void*)msg->body.data, (void*)flashOpCurAddr1, datalen);
+                flashOpCurAddr1+= datalen;
                 plugin_return_value = PLUGIN_BYTE_OK;
             }
-            sendPluginOneByteAnswer(CMD_IMPORT_EEPROM, plugin_return_value, incomingData);
             break;
         }
 
         // end eeprom import
         case CMD_IMPORT_EEPROM_END :
         {
-            eeprom_import_approved = FALSE;
-            sendPluginOneByteAnswer(CMD_IMPORT_EEPROM_END, PLUGIN_BYTE_OK, incomingData);
+            plugin_return_value = PLUGIN_BYTE_OK;
+            currentFlashOpUid = 0;
             break;
+        }
+#endif
+        
+        // set password bootkey
+        case CMD_SET_BOOTLOADER_PWD :
+        {
+            if ((eeprom_read_byte((uint8_t*)EEP_BOOT_PWD_SET) != BOOTLOADER_PWDOK_KEY) && (datalen == PACKET_EXPORT_SIZE))
+            {
+                eeprom_write_block((void*)msg->body.data, (void*)EEP_BOOT_PWD, PACKET_EXPORT_SIZE);
+                eeprom_write_byte((uint8_t*)EEP_BOOT_PWD_SET, BOOTLOADER_PWDOK_KEY);
+                plugin_return_value = PLUGIN_BYTE_OK;
+            }
+            else
+            {
+                plugin_return_value = PLUGIN_BYTE_ERROR;
+            }
+            break;
+        }
+        
+        // Jump to bootloader
+        case CMD_JUMP_TO_BOOTLOADER :
+        {
+            #ifndef DEV_PLUGIN_COMMS
+                uint8_t temp_buffer[PACKET_EXPORT_SIZE];
+            #endif
+            
+            // Mandatory wait for bruteforce
+            userViewDelay();
+            #ifdef DEV_PLUGIN_COMMS
+                // Write "jump to bootloader" key in eeprom
+                eeprom_write_word((uint16_t*)EEP_BOOTKEY_ADDR, BOOTLOADER_BOOTKEY);
+                // Use WDT to reset the device
+                cli();
+                wdt_reset();
+                wdt_clear_flag();
+                wdt_change_enable();
+                wdt_enable_2s();
+                sei();
+                while(1);
+            #else
+                if ((eeprom_read_byte((uint8_t*)EEP_BOOT_PWD_SET) == BOOTLOADER_PWDOK_KEY) && (datalen == PACKET_EXPORT_SIZE))
+                {
+                    eeprom_read_block((void*)temp_buffer, (void*)EEP_BOOT_PWD, PACKET_EXPORT_SIZE);
+                    if (memcmp((void*)temp_buffer, (void*)msg->body.data, PACKET_EXPORT_SIZE) == 0)
+                    {
+                        // Write "jump to bootloader" key in eeprom
+                        eeprom_write_word((uint16_t*)EEP_BOOTKEY_ADDR, BOOTLOADER_BOOTKEY);
+                        // Use WDT to reset the device
+                        cli();
+                        wdt_reset();
+                        wdt_clear_flag();
+                        wdt_change_enable();
+                        wdt_enable_2s();
+                        sei();
+                        while(1);
+                    }
+                }
+            #endif
         }
 
         // Development commands
@@ -554,8 +584,9 @@ void usbProcessIncoming(uint8_t* incomingData)
         // erase eeprom
         case CMD_ERASE_EEPROM :
         {
+            eraseFlashUsersContents();
             firstTimeUserHandlingInit();
-            sendPluginOneByteAnswer(CMD_ERASE_EEPROM, PLUGIN_BYTE_OK, incomingData);
+            plugin_return_value = PLUGIN_BYTE_OK;
             break;
         }
 
@@ -563,7 +594,7 @@ void usbProcessIncoming(uint8_t* incomingData)
         case CMD_ERASE_FLASH :
         {
             eraseFlashUsersContents();
-            sendPluginOneByteAnswer(CMD_ERASE_FLASH, PLUGIN_BYTE_OK, incomingData);
+            plugin_return_value = PLUGIN_BYTE_OK;
             break;
         }
 
@@ -579,7 +610,6 @@ void usbProcessIncoming(uint8_t* incomingData)
             {
                 plugin_return_value = PLUGIN_BYTE_ERROR;
             }
-            sendPluginOneByteAnswer(CMD_ERASE_SMC, plugin_return_value, incomingData);
             break;
         }
 
@@ -598,6 +628,19 @@ void usbProcessIncoming(uint8_t* incomingData)
                 oledWriteActiveBuffer();
                 oledBitmapDrawFlash(msg->body.data[1], msg->body.data[2], msg->body.data[0], 0);
             }
+            return;
+        }
+        
+        case CMD_CLONE_SMARTCARD :
+        {
+            if (cloneSmartCardProcess(SMARTCARD_DEFAULT_PIN) == RETURN_OK)
+            {
+                plugin_return_value = PLUGIN_BYTE_OK;
+            } 
+            else
+            {
+                plugin_return_value = PLUGIN_BYTE_ERROR;
+            }
             break;
         }
 
@@ -605,22 +648,28 @@ void usbProcessIncoming(uint8_t* incomingData)
         {
             usbPrintf_P(PSTR("set font file %d\n"), msg->body.data[0]);
             oledSetFont(msg->body.data[0]);
-#if 0
-            oledFlipDisplayedBuffer();
-            oledWriteActiveBuffer();
-            oledClear();
-            uint32_t start = millis();
-            oledPutstr_P(PSTR("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"));
-            oledPutstr_P(PSTR("abcdefghijklmnopqrstuvwxyz:~#$"));
-            oledPutstr_P(PSTR("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"));
-            oledPutstr_P(PSTR("abcdefghijklmnopqrstuvwxyz:~#$"));
-            uint32_t end = millis();
-            usbPrintf_P(PSTR("Time to print: %lu msecs\n"),end-start);
-#endif
+
+            if (datalen > 1) {
+                usbPrintf_P(PSTR("testing string \"%s\"\n"), (char *)&msg->body.data[1]);
+                oledFlipBuffers(0,0);
+                oledWriteActiveBuffer();
+                oledClear();
+                oledPutstr((char *)&msg->body.data[1]);
+            }
+
+            return;
         }
+        case CMD_STACK_FREE:
+            
+            usbPutstr("Stack Free ");
+            int_to_string(stackFree(),stack_str);
+            usbPutstr(stack_str);
+            usbPutstr(" bytes\n");
+        return;
 #endif
 
-        default : break;
+        default :   return;
     }
+    usbSendMessage(datacmd, 1, &plugin_return_value);
 }
 

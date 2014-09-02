@@ -1,0 +1,35 @@
+Processing...
+Card blocked!
+PB with card!
+Wrong pin!
+Please Remove The Card
+Insert other smartcard
+Failed!
+PIN changed!
+Not changed!
+User added
+Couldn't add user
+Card unlocked
+Card ID not found
+Insert new smartcard
+Done
+Card removed
+Are you sure?
+Are you REALLY sure?
+Other cards for this user?
+Enter login?
+Enter password?
+Approve memory operation?
+Insert your PIN
+New PIN?
+Confirm PIN
+Confirm access to
+with this login:
+Confirm new credentials for:
+Add username:
+on
+Change password for:
+Wrong pin, 1 try left
+Wrong pin, 2 tries left
+Wrong pin, 3 tries left
+Create new mooltipass user?

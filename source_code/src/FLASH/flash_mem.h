@@ -32,37 +32,23 @@
 #include "defines.h"
 #include <stdint.h>
 
-RET_TYPE sendDataToFlash(uint8_t opcodeSize, void *opcode, uint16_t bufferSize, void *buffer);
-RET_TYPE waitForFlash(void);
-RET_TYPE checkFlashID(void);
 RET_TYPE initFlash(void);
 
 // Erase Functions
-RET_TYPE sectorZeroErase(uint8_t sectorNumber);
-RET_TYPE sectorErase(uint8_t sectorNumber);
-RET_TYPE blockErase(uint16_t blockNumber);
-RET_TYPE pageErase(uint16_t pageNumber);
+void sectorZeroErase(uint8_t sectorNumber);
+void sectorErase(uint8_t sectorNumber);
+void blockErase(uint16_t blockNumber);
+void pageErase(uint16_t pageNumber);
 
-RET_TYPE formatFlash();
-RET_TYPE flashWriteBufferToPage(uint16_t page);
-RET_TYPE flashRawRead(uint8_t* datap, uint32_t addr, uint16_t size);
+void formatFlash(void);
+void flashWriteBufferToPage(uint16_t page);
+void flashRawRead(uint8_t* datap, uint16_t addr, uint16_t size);
 void flashWriteBuffer(uint8_t* datap, uint16_t offset, uint16_t size);
-RET_TYPE writeDataToFlash(uint16_t pageNumber, uint16_t offset, uint16_t dataSize, void *data);
-RET_TYPE readDataFromFlash(uint16_t pageNumber, uint16_t offset, uint16_t dataSize, void *data);
+void writeDataToFlash(uint16_t pageNumber, uint16_t offset, uint16_t dataSize, void *data);
+void readDataFromFlash(uint16_t pageNumber, uint16_t offset, uint16_t dataSize, void *data);
 
 // Defines
 /** DEFINES FLASH **/
-/** DEFINES NODES **/
-#define NODE_SIZE_PARENT 66
-#define NODE_SIZE_CHILD 132
-#define NODE_SIZE_DATA 132
-
-/*
-#define NODE_TYPE_PARENT 0
-#define NODE_TYPE_CHILD 1
-#define NODE_TYPE_CHILD_DATA 2
-#define NODE_TYPE_DATA 3
-*/
 
 // Chip selection
 #if defined(FLASH_CHIP_1M)      // Used to identify a 1M Flash Chip (AT45DB011D)
@@ -87,6 +73,7 @@ RET_TYPE readDataFromFlash(uint16_t pageNumber, uint16_t offset, uint16_t dataSi
     #define MAP_PAGES 1                // Pages required to hold 'node' usage (map) -> CEILING(MAP_BYTES / BYTES_PER_PAGE)
     #define NODE_PARENT_PER_PAGE 4     // Number of parent nodes per page -> BYTES_PER_PAGE / NODE_SIZE_PARENT
 	#define NODE_CHILD_MAX_NODE 2	   // Last valid child node block (due to size of child = size of parent * 2)
+	#define NODE_PER_PAGE 2            // Number of nodes per page
     #define BLOCK_COUNT 64             // Number of blocks in the chip
     #define SECTOR_START 1             // The first whole sector number in the chip
     #define SECTOR_END 3               // The last whole sector number in the chip
@@ -117,6 +104,7 @@ RET_TYPE readDataFromFlash(uint16_t pageNumber, uint16_t offset, uint16_t dataSi
     #define MAP_PAGES 2                // Pages required to hold 'node' usage (map) -> CEILING(MAP_BYTES / BYTES_PER_PAGE)
     #define NODE_PARENT_PER_PAGE 4     // Number of parent nodes per page -> BYTES_PER_PAGE / NODE_SIZE_PARENT
 	#define NODE_CHILD_MAX_NODE 2	   // Last valid child node block (due to size of child = size of parent * 2)
+    #define NODE_PER_PAGE 2            // Number of nodes per page
     #define BLOCK_COUNT 128            // Number of blocks in the chip
     #define SECTOR_START 1             // The first whole sector number in the chip
     #define SECTOR_END 7               // The last whole sector number in the chip
@@ -147,6 +135,7 @@ RET_TYPE readDataFromFlash(uint16_t pageNumber, uint16_t offset, uint16_t dataSi
     #define MAP_PAGES 4                // Pages required to hold 'node' usage (map) -> CEILING(MAP_BYTES / BYTES_PER_PAGE)
     #define NODE_PARENT_PER_PAGE 4     // Number of parent nodes per page -> BYTES_PER_PAGE / NODE_SIZE_PARENT
 	#define NODE_CHILD_MAX_NODE 2	   // Last valid child node block (due to size of child = size of parent * 2)
+	#define NODE_PER_PAGE 2            // Number of nodes per page
     #define BLOCK_COUNT 256            // Number of blocks in the chip
     #define SECTOR_START 1             // The first whole sector number in the chip
     #define SECTOR_END 7               // The last whole sector number in the chip
@@ -177,6 +166,7 @@ RET_TYPE readDataFromFlash(uint16_t pageNumber, uint16_t offset, uint16_t dataSi
     #define MAP_PAGES 8                // Pages required to hold 'node' usage (map) -> CEILING(MAP_BYTES / BYTES_PER_PAGE)
     #define NODE_PARENT_PER_PAGE 4     // Number of parent nodes per page -> BYTES_PER_PAGE / NODE_SIZE_PARENT
 	#define NODE_CHILD_MAX_NODE 2	   // Last valid child node block (due to size of child = size of parent * 2)
+	#define NODE_PER_PAGE 2            // Number of nodes per page
     #define BLOCK_COUNT 512            // Number of blocks in the chip
     #define SECTOR_START 1             // The first whole sector number in the chip
     #define SECTOR_END 15               // The last whole sector number in the chip
@@ -207,6 +197,7 @@ RET_TYPE readDataFromFlash(uint16_t pageNumber, uint16_t offset, uint16_t dataSi
     #define MAP_PAGES 8                // Pages required to hold 'node' usage (map) -> CEILING(MAP_BYTES / BYTES_PER_PAGE)
     #define NODE_PARENT_PER_PAGE 8     // Number of parent nodes per page -> BYTES_PER_PAGE / NODE_SIZE_PARENT
 	#define NODE_CHILD_MAX_NODE 6	   // Last valid child node block (due to size of child = size of parent * 2)
+	#define NODE_PER_PAGE 4            // Number of nodes per page
     #define BLOCK_COUNT 512            // Number of blocks in the chip
     #define SECTOR_START 1             // The first whole sector number in the chip
     #define SECTOR_END 15              // The last whole sector number in the chip
@@ -237,6 +228,7 @@ RET_TYPE readDataFromFlash(uint16_t pageNumber, uint16_t offset, uint16_t dataSi
     #define MAP_PAGES 16               // Pages required to hold 'node' usage (map) -> CEILING(MAP_BYTES / BYTES_PER_PAGE)
     #define NODE_PARENT_PER_PAGE 8     // Number of parent nodes per page -> BYTES_PER_PAGE / NODE_SIZE_PARENT
 	#define NODE_CHILD_MAX_NODE 6	   // Last valid child node block (due to size of child = size of parent * 2)
+	#define NODE_PER_PAGE 4            // Number of nodes per page
     #define BLOCK_COUNT 1024           // Number of blocks in the chip
     #define SECTOR_START 1             // The first whole sector number in the chip
     #define SECTOR_END 63              // The last whole sector number in the chip

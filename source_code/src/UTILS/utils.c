@@ -21,7 +21,7 @@
 *   \brief  Useful functions
 */
 #include "mooltipass.h"
-#include <util/delay.h>
+#include "utils.h"
 
 
 /*! \fn     swap16(uint16_t val)
@@ -31,7 +31,7 @@
 */
 uint16_t swap16(uint16_t val)
 {
-    return ((val & 0xFF) << 8) | ((val >> 8) & 0xFF);
+    return ((val << 8) | (uint8_t)(val >> 8));
 }
 
 /*! \fn     numchar_to_char(unsigned char c)
@@ -245,16 +245,4 @@ uint8_t hm_uint8_strncmp(uint8_t* buffer1, uint8_t* buffer2, uint8_t nb_chars)
 	}
 	
 	return 0;
-}
-
-/*! \fn     delay_ms(uint16_t ms) 
-*   \brief  ms delay routine
-*   \param  ms   The number of milliseconds
-*/
-void delay_ms(uint16_t ms) 
-{ 
-    while (ms--) 
-    {
-        _delay_ms(1); 
-    }
 }
